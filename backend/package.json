@@ -1,0 +1,10 @@
+{
+  "name": "auction-backend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Python FastAPI backend helper for npm commands",
+  "scripts": {
+    "dev": "powershell -ExecutionPolicy Bypass -File ./run-dev.ps1",
+    "start": "powershell -ExecutionPolicy Bypass -File ./run-dev.ps1"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "auction-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Auction Web App workspace root",
+  "scripts": {
+    "dev": "powershell -ExecutionPolicy Bypass -File ./start-dev.ps1",
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "build": "npm run build --prefix frontend"
+  }
+}
