@@ -1,7 +1,11 @@
 import asyncio
+import base64
+import binascii
 import io
 import json
 import logging
+import os
+import re
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import inspect, text, func
 from sqlalchemy.exc import IntegrityError
 import openpyxl
+from pydantic import BaseModel
 
 from app.database import Base, engine, get_db, SessionLocal
 from app.models import Franchise, Player, AuctionState, AuditLog
@@ -17,6 +22,25 @@ from app import schemas, auction_engine, roll_parser
 from app.websocket import manager
 
 timer_task = None
+MAX_PHOTO_SIZE_BYTES = 300 * 1024
+PHOTO_DATA_URL_PATTERN = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$")
+
+
+class PhotoUploadRequest(BaseModel):
+    photo_data: str
+
+
+def validate_photo_data(photo_data: str) -> bytes:
+    photo_match = PHOTO_DATA_URL_PATTERN.fullmatch(photo_data)
+    if not photo_match:
+        raise HTTPException(status_code=400, detail="Photo must be uploaded as an image file.")
+    try:
+        photo_bytes = base64.b64decode(photo_match.group(2), validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid photo data.")
+    if len(photo_bytes) > MAX_PHOTO_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail="Photo size must be 300 KB or less.")
+    return photo_bytes
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("main")
@@ -27,9 +51,15 @@ app = FastAPI(
     version="1.0.0"
 )
 
+cors_origins_raw = os.getenv("CORS_ORIGINS", "*")
+if cors_origins_raw == "*":
+    origins = ["*"]
+else:
+    origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -38,21 +68,23 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     global timer_task
-    # Auto-migrate missing columns for existing SQLite database
+    # Create database schema first if tables do not exist
+    Base.metadata.create_all(bind=engine)
+
+    # Auto-migrate missing columns safely for existing databases
     with engine.connect() as conn:
-        # Franchises columns
         for col_name, col_type in [
             ("captain_name", "VARCHAR"),
             ("vice_captain_name", "VARCHAR"),
             ("vice_captain_mobile", "VARCHAR")
         ]:
+            trans = conn.begin()
             try:
                 conn.execute(text(f"ALTER TABLE franchises ADD COLUMN {col_name} {col_type}"))
-                conn.commit()
+                trans.commit()
             except Exception:
-                pass
+                trans.rollback()
 
-        # Auction state columns
         for col_name, col_type in [
             ("timer_seconds", "INTEGER DEFAULT 30"),
             ("timer_duration_seconds", "INTEGER DEFAULT 30"),
@@ -63,13 +95,13 @@ async def startup_event():
             ("is_paused", "INTEGER DEFAULT 0"),
             ("round_number", "INTEGER DEFAULT 1")
         ]:
+            trans = conn.begin()
             try:
                 conn.execute(text(f"ALTER TABLE auction_state ADD COLUMN {col_name} {col_type}"))
-                conn.commit()
+                trans.commit()
             except Exception:
-                pass
+                trans.rollback()
 
-    Base.metadata.create_all(bind=engine)
     from app.seed import seed_database
     seed_database()
     timer_task = asyncio.create_task(run_auction_timer())
@@ -241,6 +273,9 @@ def get_admin_players(db: Session = Depends(get_db)):
 
 @app.post("/api/players/register", response_model=schemas.PublicPlayerResponse)
 async def register_player(req: schemas.PlayerRegisterRequest, db: Session = Depends(get_db)):
+    if req.photo_url:
+        validate_photo_data(req.photo_url)
+
     # Normalize identity fields before checking uniqueness. The database stores
     # roll numbers in uppercase and trims whitespace from both identity fields.
     normalized_roll_number = req.roll_number.strip().upper()
@@ -336,6 +371,18 @@ async def register_player(req: schemas.PlayerRegisterRequest, db: Session = Depe
 
     await broadcast_auction_state(db)
     return player
+
+
+@app.put("/api/players/{player_id}/photo")
+async def upload_player_photo(player_id: int, req: PhotoUploadRequest, db: Session = Depends(get_db)):
+    validate_photo_data(req.photo_data)
+    player = db.query(Player).filter(Player.id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+    player.photo_url = req.photo_data
+    db.commit()
+    await broadcast_auction_state(db)
+    return {"photo_url": player.photo_url}
 
 @app.get("/api/players/lookup", response_model=schemas.PlayerLookupResponse)
 def lookup_player(query: str, db: Session = Depends(get_db)):

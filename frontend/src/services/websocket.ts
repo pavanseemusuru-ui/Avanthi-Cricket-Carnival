@@ -7,9 +7,23 @@ export class AuctionWebSocket {
   private isExplicitClose: boolean = false;
 
   public connect() {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/ws/auction`;
+    let wsUrl: string;
+    const envApiUrl = import.meta.env.VITE_API_URL;
+    if (envApiUrl) {
+      try {
+        const parsed = new URL(envApiUrl);
+        const protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl = `${protocol}//${parsed.host}/ws/auction`;
+      } catch {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host;
+        wsUrl = `${protocol}//${host}/ws/auction`;
+      }
+    } else {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host;
+      wsUrl = `${protocol}//${host}/ws/auction`;
+    }
 
     console.log(`Connecting to WebSocket: ${wsUrl}`);
     this.ws = new WebSocket(wsUrl);

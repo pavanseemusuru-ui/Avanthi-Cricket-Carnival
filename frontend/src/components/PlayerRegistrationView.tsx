@@ -1,18 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
-import { UserPlus, CheckCircle2, AlertCircle, Sparkles, HelpCircle } from 'lucide-react';
+import { UserPlus, CheckCircle2, AlertCircle, Sparkles, HelpCircle, ImagePlus } from 'lucide-react';
 
 interface PlayerRegistrationViewProps {
   onSuccess: () => void;
 }
 
 const BASE_PRICE_LADDER = [20, 30, 40, 50, 60, 70, 80, 90, 100, 120, 140, 160, 180, 200, 230, 250];
+const MAX_PHOTO_SIZE_BYTES = 300 * 1024;
 
 export const PlayerRegistrationView: React.FC<PlayerRegistrationViewProps> = ({ onSuccess }) => {
   const [rollNumber, setRollNumber] = useState('');
   const [name, setName] = useState('');
   const [mobileNumber, setMobileNumber] = useState('');
-  const [photoUrl, setPhotoUrl] = useState('');
+  const [photoData, setPhotoData] = useState('');
+  const [photoName, setPhotoName] = useState('');
   const [cricheroesUrl, setCricheroesUrl] = useState('');
   const [cricheroesMobile, setCricheroesMobile] = useState('');
   const [basePrice, setBasePrice] = useState<number>(20);
@@ -54,6 +56,30 @@ export const PlayerRegistrationView: React.FC<PlayerRegistrationViewProps> = ({ 
 
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  const handlePhotoChange = (file: File | undefined) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setStatusMsg({ type: 'error', text: 'Please select a valid image file (e.g. JPG, PNG).' });
+      return;
+    }
+    if (file.size > MAX_PHOTO_SIZE_BYTES) {
+      setPhotoData('');
+      setPhotoName('');
+      setStatusMsg({ type: 'error', text: 'Photo size must be 300 KB or less.' });
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setPhotoData(reader.result);
+        setPhotoName(file.name);
+        setStatusMsg(null);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
   // Auto-parse roll number as user types
   useEffect(() => {
     if (rollNumber.trim().length >= 8) {
@@ -81,7 +107,7 @@ export const PlayerRegistrationView: React.FC<PlayerRegistrationViewProps> = ({ 
         roll_number: rollNumber,
         name,
         mobile_number: mobileNumber,
-        photo_url: photoUrl,
+        photo_url: photoData || undefined,
         cricheroes_url: cricheroesUrl,
         cricheroes_mobile: cricheroesMobile,
         base_price: basePrice,
@@ -193,14 +219,20 @@ export const PlayerRegistrationView: React.FC<PlayerRegistrationViewProps> = ({ 
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-gray-300 block mb-1">Photograph URL</label>
-              <input
-                type="url"
-                placeholder="https://..."
-                value={photoUrl}
-                onChange={(e) => setPhotoUrl(e.target.value)}
-                className="w-full glass-input rounded-xl p-3 text-xs"
-              />
+              <label className="text-xs font-semibold text-gray-300 block mb-1">Photograph (max 300 KB)</label>
+              <label className="flex items-center gap-3 w-full glass-input rounded-xl p-3 text-xs cursor-pointer">
+                <ImagePlus className="w-4 h-4 text-indigo-400 shrink-0" />
+                <span className="truncate text-gray-300">{photoName || 'Choose photo'}</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => handlePhotoChange(e.target.files?.[0])}
+                  className="sr-only"
+                />
+              </label>
+              {photoData && (
+                <img src={photoData} alt="Selected player photograph" className="mt-2 h-20 w-20 rounded-xl object-cover border border-indigo-500/40" />
+              )}
             </div>
           </div>
 

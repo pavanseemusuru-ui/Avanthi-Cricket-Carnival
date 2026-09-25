@@ -1,6 +1,7 @@
 import type { Player, Franchise, AuctionState, AuditLog, AdminPlayer, AdminFranchise } from '../types';
 
-const API_BASE = '/api';
+const rawBase = import.meta.env.VITE_API_URL || '';
+const API_BASE = rawBase ? `${rawBase.replace(/\/$/, '')}/api` : '/api';
 
 async function handleResponse<T>(res: Response, defaultError: string): Promise<T> {
   if (!res.ok) {
