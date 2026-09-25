@@ -55,6 +55,15 @@ export const api = {
     return handleResponse<any>(res, 'Failed to update payment status');
   },
 
+  uploadPlayerPhoto: async (playerId: number, photoData: string) => {
+    const res = await fetch(`${API_BASE}/players/${playerId}/photo`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ photo_data: photoData }),
+    });
+    return handleResponse<any>(res, 'Failed to upload photo');
+  },
+
   resolvePlayerProfile: async (playerId: number, cricheroesUrl: string, cricheroesMobile: string) => {
     const res = await fetch(
       `${API_BASE}/players/${playerId}/resolve-profile?cricheroes_url=${encodeURIComponent(cricheroesUrl)}&cricheroes_mobile=${encodeURIComponent(cricheroesMobile)}`,

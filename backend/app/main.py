@@ -31,6 +31,8 @@ class PhotoUploadRequest(BaseModel):
 
 
 def validate_photo_data(photo_data: str) -> bytes:
+    if photo_data.startswith("http://") or photo_data.startswith("https://"):
+        return b""
     photo_match = PHOTO_DATA_URL_PATTERN.fullmatch(photo_data)
     if not photo_match:
         raise HTTPException(status_code=400, detail="Photo must be uploaded as an image file.")
@@ -38,7 +40,7 @@ def validate_photo_data(photo_data: str) -> bytes:
         photo_bytes = base64.b64decode(photo_match.group(2), validate=True)
     except (binascii.Error, ValueError):
         raise HTTPException(status_code=400, detail="Invalid photo data.")
-    if len(photo_bytes) > MAX_PHOTO_SIZE_BYTES:
+    if len(photo_bytes) >= MAX_PHOTO_SIZE_BYTES:
         raise HTTPException(status_code=413, detail="Photo size must be 300 KB or less.")
     return photo_bytes
 
