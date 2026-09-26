@@ -8,6 +8,7 @@ export interface Player {
   branch: string;
   year_of_study: number;
   year_override?: number;
+  year_discrepancy_reported: boolean;
   bucket: string;
   base_price: number;
   cricheroes_url?: string;

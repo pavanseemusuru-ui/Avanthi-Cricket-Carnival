@@ -52,6 +52,13 @@ def validate_photo_data(photo_data: str) -> bytes:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("main")
 
+
+def audit_actor(request: Request, fallback: str) -> str:
+    claims = getattr(getattr(request, "state", None), "user", {})
+    if claims.get("role") and claims.get("sub"):
+        return f"{claims['role']}:{claims['sub']}"
+    return fallback
+
 app = FastAPI(
     title="Avanthi Cricket Carnival - Player Auction Portal",
     description="Authoritative auction system with financial validity, squad composition rules, real-time sync, and safe audit undo.",
@@ -130,6 +137,12 @@ async def startup_event():
     # Add legacy columns with types compatible with the configured database.
     boolean_default = "BOOLEAN DEFAULT FALSE" if engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"
     legacy_columns = {
+        "players": [
+            ("skip_recalled", boolean_default),
+            ("round_one_complete", boolean_default),
+            ("round_two_complete", boolean_default),
+            ("year_discrepancy_reported", boolean_default),
+        ],
         "franchises": [
             ("captain_name", "VARCHAR"),
             ("vice_captain_name", "VARCHAR"),
@@ -186,7 +199,7 @@ async def run_auction_timer():
         await asyncio.sleep(1)
         db = SessionLocal()
         try:
-            state = db.query(AuctionState).filter(AuctionState.id == 1).first()
+            state = get_or_create_auction_state(db)
             if state and state.timer_running and not state.is_paused and state.timer_seconds > 0:
                 state.timer_seconds -= 1
                 if state.timer_seconds <= 0:
@@ -208,11 +221,10 @@ async def broadcast_auction_state(db: Session):
     })
 
 def get_franchise_bucket_counts(db: Session, franchise_id: int) -> Dict[str, int]:
-    # Counts auction purchases + retained + referred in each bucket
+    # Squad quotas count only auction purchases; retained and referred players are free.
     players = db.query(Player).filter(
-        (Player.sold_franchise_id == franchise_id) |
-        (Player.retained_franchise_id == franchise_id) |
-        (Player.referred_franchise_id == franchise_id)
+        Player.sold_franchise_id == franchise_id,
+        Player.sold_type.in_(["sold", "allotted", "scouted", "direct_assigned"]),
     ).all()
     
     counts = {"B1": 0, "B2": 0, "B3": 0, "B4": 0, "B5": 0, "PG": 0}
@@ -244,10 +256,47 @@ def calculate_franchise_purse(db: Session, franchise_id: int) -> int:
             spent += p.sold_price
     return max(0, 1000 - spent)
 
-def get_auction_state_data(db: Session) -> Dict[str, Any]:
-    state = db.query(AuctionState).filter(AuctionState.id == 1).first()
+def get_or_create_auction_state(db: Session) -> AuctionState:
+    state = db.query(AuctionState).first()
     if not state:
-        return {}
+        first_player = db.query(Player).filter(
+            Player.sold_franchise_id.is_(None),
+            Player.retained_franchise_id.is_(None),
+            Player.referred_franchise_id.is_(None)
+        ).first()
+        state = AuctionState(
+            id=1,
+            current_bucket=first_player.bucket if first_player else "B3",
+            current_player_id=first_player.id if first_player else None,
+            current_bid_price=0,
+            current_bidder_id=None,
+            timer_seconds=30,
+            timer_duration_seconds=30,
+            timer_running=False,
+            draw_mode="auto",
+            passed_franchise_ids="[]",
+            bucket_minimums_json='{"B1":2,"B2":2,"B3":2,"B4":2,"B5":2}',
+            is_paused=False,
+            round_number=1
+        )
+        db.add(state)
+        db.commit()
+        db.refresh(state)
+    return state
+
+def get_auction_state_data(db: Session) -> Dict[str, Any]:
+    state = get_or_create_auction_state(db)
+    if not state.current_player_id:
+        unassigned = db.query(Player).filter(
+            Player.sold_franchise_id.is_(None),
+            Player.retained_franchise_id.is_(None),
+            Player.referred_franchise_id.is_(None)
+        ).first()
+        if unassigned:
+            state.current_player_id = unassigned.id
+            state.current_bucket = unassigned.bucket
+            db.commit()
+            db.refresh(state)
 
     bucket_mins = json.loads(state.bucket_minimums_json) if state.bucket_minimums_json else auction_engine.DEFAULT_BUCKET_MINIMUMS
     passed_ids = json.loads(state.passed_franchise_ids) if state.passed_franchise_ids else []
@@ -265,7 +314,7 @@ def get_auction_state_data(db: Session) -> Dict[str, Any]:
             current_bidder = schemas.PublicFranchiseResponse.from_orm(f).dict()
 
     # Calculate next required bid
-    if state.current_bid_price > 0:
+    if state.current_bidder_id and state.current_bid_price > 0:
         next_bid = auction_engine.get_next_bid_increment(state.current_bid_price)
     elif current_player:
         next_bid = current_player["base_price"]
@@ -339,8 +388,14 @@ def get_admin_players(db: Session = Depends(get_db)):
 
 @app.post("/api/players/register", response_model=schemas.PublicPlayerResponse)
 async def register_player(req: schemas.PlayerRegisterRequest, db: Session = Depends(get_db)):
-    if req.photo_url:
-        validate_photo_data(req.photo_url)
+    if not req.photo_url:
+        raise HTTPException(status_code=400, detail="A player photograph is required.")
+    validate_photo_data(req.photo_url)
+    allowed_base_prices = {20, 30, 40, 50, 60, 70, 80, 90, 100, 120, 140, 160, 180, 200, 230, 250}
+    if req.base_price not in allowed_base_prices:
+        raise HTTPException(status_code=400, detail="Base price must use an allowed price-ladder value.")
+    if not (req.is_skilled_batter or req.is_skilled_bowler or req.is_wicket_keeper or req.confirm_fielder_only):
+        raise HTTPException(status_code=400, detail="Confirm Fielder-only registration or declare a cricketing skill.")
 
     # Normalize identity fields before checking uniqueness. The database stores
     # roll numbers in uppercase and trims whitespace from both identity fields.
@@ -362,6 +417,24 @@ async def register_player(req: schemas.PlayerRegisterRequest, db: Session = Depe
         raise HTTPException(status_code=409, detail="Mobile number already registered.")
 
     parsed = roll_parser.parse_roll_number(normalized_roll_number)
+    if not parsed["valid"]:
+        if not normalized_roll_number.startswith("PG"):
+            raise HTTPException(status_code=400, detail=parsed["formatted_summary"])
+        if (
+            req.program not in {"M.Tech", "MBA", "MCA"}
+            or not req.branch or not req.branch.strip()
+            or req.year_of_study not in {1, 2}
+            or req.admission_year is None
+            or not 2000 <= req.admission_year <= roll_parser.CURRENT_ACADEMIC_YEAR
+        ):
+            raise HTTPException(status_code=400, detail="PG registrations require program, specialization, study year, and admission year.")
+        parsed.update({
+            "program": req.program,
+            "branch": req.branch.strip(),
+            "year_of_study": req.year_of_study,
+            "admission_year": req.admission_year,
+            "show_acc_reference": req.admission_year == roll_parser.CURRENT_ACADEMIC_YEAR,
+        })
     
     # Check CricHeroes profile pending rule (§5.2)
     profile_status = "completed"
@@ -391,6 +464,7 @@ async def register_player(req: schemas.PlayerRegisterRequest, db: Session = Depe
         program=parsed["program"],
         branch=parsed["branch"],
         year_of_study=parsed["year_of_study"],
+        year_discrepancy_reported=req.year_discrepancy_reported,
         bucket=parsed["bucket"],
         base_price=req.base_price,
         cricheroes_url=req.cricheroes_url,
@@ -425,8 +499,10 @@ async def register_player(req: schemas.PlayerRegisterRequest, db: Session = Depe
         best_bowling=req.best_bowling,
         catches=req.catches,
         stumpings=req.stumpings,
-        referring_team_name=req.referring_team_name
+        referring_team_name=req.referring_team_name if parsed["show_acc_reference"] else None
     )
+    max_lot_number = db.query(func.max(Player.random_lot_number)).filter(Player.bucket == parsed["bucket"]).scalar()
+    player.random_lot_number = (max_lot_number or 0) + 1
     db.add(player)
     try:
         db.commit()
@@ -480,14 +556,15 @@ def lookup_player(query: str, db: Session = Depends(get_db)):
     }
 
 @app.post("/api/auction/timer-config")
-async def update_timer_config(req: schemas.TimerSettingRequest, db: Session = Depends(get_db)):
-    state = db.query(AuctionState).filter(AuctionState.id == 1).first()
-    if not state:
-        raise HTTPException(status_code=404, detail="Auction state not found.")
+async def update_timer_config(req: schemas.TimerSettingRequest, request: Request, db: Session = Depends(get_db)):
+    state = get_or_create_auction_state(db)
 
     if req.duration_seconds is not None:
-        state.timer_duration_seconds = max(5, req.duration_seconds)
-        state.timer_seconds = state.timer_duration_seconds
+        expected_duration = 20 if state.current_bidder_id else 30
+        if req.duration_seconds != expected_duration:
+            raise HTTPException(status_code=400, detail=f"Timer duration is fixed at {expected_duration} seconds for this bidding phase.")
+        state.timer_duration_seconds = expected_duration
+        state.timer_seconds = expected_duration
 
     if req.action == "pause":
         state.is_paused = True
@@ -501,46 +578,68 @@ async def update_timer_config(req: schemas.TimerSettingRequest, db: Session = De
         state.timer_running = True
         state.is_paused = False
 
+    db.add(AuditLog(
+        action_type="TIMER_CONFIG",
+        performed_by=audit_actor(request, "Super Admin"),
+        reason=f"Timer action={req.action or 'configure'}, duration={state.timer_duration_seconds} seconds.",
+    ))
     db.commit()
     await broadcast_auction_state(db)
     return {"message": "Timer settings updated", "timer_duration": state.timer_duration_seconds, "timer_seconds": state.timer_seconds}
 
 @app.put("/api/players/{player_id}/pay")
-async def mark_player_paid(player_id: int, paid: bool = True, db: Session = Depends(get_db)):
+async def mark_player_paid(player_id: int, request: Request, paid: bool = True, db: Session = Depends(get_db)):
     player = db.query(Player).filter(Player.id == player_id).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
+    if paid and player.profile_status != "completed":
+        raise HTTPException(status_code=400, detail="Resolve the CricHeroes profile before marking this player as paid.")
     player.payment_status = "paid" if paid else "unpaid"
+    db.add(AuditLog(
+        action_type="PLAYER_PAID" if paid else "PLAYER_UNPAID",
+        player_id=player.id,
+        performed_by=audit_actor(request, "Super Admin"),
+        reason=f"Payment status set to {player.payment_status}.",
+    ))
     db.commit()
     await broadcast_auction_state(db)
     return {"message": f"Player {player.name} payment status set to {player.payment_status}"}
 
 @app.put("/api/players/{player_id}/resolve-profile")
-async def resolve_player_profile(player_id: int, cricheroes_url: str, cricheroes_mobile: str, db: Session = Depends(get_db)):
+async def resolve_player_profile(player_id: int, cricheroes_url: str, cricheroes_mobile: str, request: Request, db: Session = Depends(get_db)):
     player = db.query(Player).filter(Player.id == player_id).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
     player.cricheroes_url = cricheroes_url
     player.cricheroes_mobile = cricheroes_mobile
     player.profile_status = "completed"
+    db.add(AuditLog(
+        action_type="PROFILE_RESOLVED",
+        player_id=player.id,
+        performed_by=audit_actor(request, "Super Admin"),
+        reason="CricHeroes profile details verified.",
+    ))
     db.commit()
     await broadcast_auction_state(db)
     return {"message": f"Profile resolved for {player.name}"}
 
 @app.put("/api/players/{player_id}/override-year")
-async def override_player_year(player_id: int, override_year: int, db: Session = Depends(get_db)):
+async def override_player_year(player_id: int, override_year: int, request: Request, db: Session = Depends(get_db)):
     player = db.query(Player).filter(Player.id == player_id).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
+    valid_years = {"UG": {1, 2, 3, 4}, "Diploma": {1, 2, 3}, "PG": {1, 2}}
+    if override_year not in valid_years.get(player.course, set()):
+        raise HTTPException(status_code=400, detail="Override year is outside the player's supported course years.")
     player.year_override = override_year
+    player.year_of_study = override_year
+    player.year_discrepancy_reported = False
     if player.course == "UG":
         player.bucket = f"B{override_year}"
-    db.commit()
-    
     log = AuditLog(
         action_type="YEAR_OVERRIDE",
         player_id=player.id,
-        performed_by="Super Admin",
+        performed_by=audit_actor(request, "Super Admin"),
         reason=f"Manually overridden player year of study to {override_year} (Detained student correction)."
     )
     db.add(log)
@@ -554,8 +653,9 @@ async def override_player_year(player_id: int, override_year: int, db: Session =
 @app.get("/api/franchises/public", response_model=List[schemas.PublicFranchiseResponse])
 def get_public_franchises(db: Session = Depends(get_db)):
     franchises = db.query(Franchise).all()
-    state = db.query(AuctionState).filter(AuctionState.id == 1).first()
+    state = get_or_create_auction_state(db)
     bucket_mins = json.loads(state.bucket_minimums_json) if (state and state.bucket_minimums_json) else auction_engine.DEFAULT_BUCKET_MINIMUMS
+    active_player = db.query(Player).filter(Player.id == state.current_player_id).first() if state and state.current_player_id else None
 
     result = []
     for f in franchises:
@@ -569,7 +669,8 @@ def get_public_franchises(db: Session = Depends(get_db)):
             purse=current_purse,
             auction_purchases_count=purchases_cnt,
             bucket_counts=b_counts,
-            bucket_minimums=bucket_mins
+            bucket_minimums=bucket_mins,
+            player_bucket=active_player.bucket if active_player else None,
         )
 
         mand_slots_needed = auction_engine.calculate_mandatory_slots_needed(b_counts, bucket_mins)
@@ -610,6 +711,8 @@ def get_admin_franchises(db: Session = Depends(get_db)):
 
 @app.post("/api/franchises/register", response_model=schemas.PublicFranchiseResponse)
 async def register_franchise(req: schemas.FranchiseRegisterRequest, db: Session = Depends(get_db)):
+    if db.query(Franchise).count() >= 11:
+        raise HTTPException(status_code=400, detail="The tournament is limited to eleven franchises.")
     existing = db.query(Franchise).filter(
         (Franchise.name == req.name) | (Franchise.short_code == req.short_code)
     ).first()
@@ -636,6 +739,122 @@ async def register_franchise(req: schemas.FranchiseRegisterRequest, db: Session 
     await broadcast_auction_state(db)
     return get_public_franchises(db)[-1]
 
+
+@app.put("/api/franchises/{franchise_id}")
+async def update_franchise(franchise_id: int, req: schemas.FranchiseUpdateRequest, request: Request, db: Session = Depends(get_db)):
+    franchise = db.query(Franchise).filter(Franchise.id == franchise_id).first()
+    if not franchise:
+        raise HTTPException(status_code=404, detail="Franchise not found")
+
+    if req.name and req.name.strip() and req.name != franchise.name:
+        dup = db.query(Franchise).filter(Franchise.name == req.name.strip(), Franchise.id != franchise_id).first()
+        if dup:
+            raise HTTPException(status_code=400, detail="Another franchise with this name already exists.")
+        franchise.name = req.name.strip()
+
+    if req.short_code and req.short_code.strip() and req.short_code.strip().upper() != franchise.short_code:
+        code_upper = req.short_code.strip().upper()
+        dup_code = db.query(Franchise).filter(Franchise.short_code == code_upper, Franchise.id != franchise_id).first()
+        if dup_code:
+            raise HTTPException(status_code=400, detail="Another franchise with this short code already exists.")
+        franchise.short_code = code_upper
+
+    if req.logo_url is not None:
+        franchise.logo_url = req.logo_url or f"https://api.dicebear.com/7.x/identicon/svg?seed={franchise.short_code}"
+    if req.faculty_coordinator_name is not None:
+        franchise.faculty_coordinator_name = req.faculty_coordinator_name
+    if req.faculty_coordinator_dept is not None:
+        franchise.faculty_coordinator_dept = req.faculty_coordinator_dept
+    if req.faculty_coordinator_photo is not None:
+        franchise.faculty_coordinator_photo = req.faculty_coordinator_photo
+    if req.faculty_coordinator_mobile is not None:
+        franchise.faculty_coordinator_mobile = req.faculty_coordinator_mobile
+    if req.captain_name is not None:
+        franchise.captain_name = req.captain_name
+    if req.captain_mobile is not None:
+        franchise.captain_mobile = req.captain_mobile
+    if req.vice_captain_name is not None:
+        franchise.vice_captain_name = req.vice_captain_name
+    if req.vice_captain_mobile is not None:
+        franchise.vice_captain_mobile = req.vice_captain_mobile
+
+    db.add(AuditLog(
+        action_type="FRANCHISE_UPDATE",
+        franchise_id=franchise.id,
+        performed_by=audit_actor(request, "Super Admin"),
+        reason=f"Updated franchise profile for {franchise.name} ({franchise.short_code}).",
+    ))
+    db.commit()
+    await broadcast_auction_state(db)
+    return {"message": f"Franchise '{franchise.name}' updated successfully."}
+
+
+@app.delete("/api/franchises/{franchise_id}")
+async def delete_franchise(franchise_id: int, request: Request, db: Session = Depends(get_db)):
+    franchise = db.query(Franchise).filter(Franchise.id == franchise_id).first()
+    if not franchise:
+        raise HTTPException(status_code=404, detail="Franchise not found")
+
+    f_name = franchise.name
+
+    # Reset any players assigned to this franchise back to unassigned
+    assigned_players = db.query(Player).filter(
+        (Player.sold_franchise_id == franchise_id) |
+        (Player.retained_franchise_id == franchise_id) |
+        (Player.referred_franchise_id == franchise_id)
+    ).all()
+    for p in assigned_players:
+        if p.sold_franchise_id == franchise_id:
+            p.sold_franchise_id = None
+            p.sold_price = None
+            p.sold_type = None
+        if p.retained_franchise_id == franchise_id:
+            p.retained_franchise_id = None
+            p.retained_role = None
+        if p.referred_franchise_id == franchise_id:
+            p.referred_franchise_id = None
+
+    state = get_or_create_auction_state(db)
+    if state.current_bidder_id == franchise_id:
+        state.current_bidder_id = None
+        state.current_bid_price = 0
+
+    db.delete(franchise)
+    db.add(AuditLog(
+        action_type="FRANCHISE_DELETE",
+        performed_by=audit_actor(request, "Super Admin"),
+        reason=f"Deleted franchise '{f_name}' (ID: {franchise_id}).",
+    ))
+    db.commit()
+    await broadcast_auction_state(db)
+    return {"message": f"Franchise '{f_name}' deleted successfully."}
+
+
+@app.post("/api/franchises/refer-player")
+async def refer_player(req: schemas.ReferPlayerRequest, request: Request, db: Session = Depends(get_db)):
+    player = db.query(Player).filter(Player.id == req.player_id).first()
+    franchise = db.query(Franchise).filter(Franchise.id == req.franchise_id).first()
+    if not player or not franchise:
+        raise HTTPException(status_code=404, detail="Player or Franchise not found.")
+    if not player.referring_team_name or player.referring_team_name.strip().lower() in {"no", "none"}:
+        raise HTTPException(status_code=400, detail="The player did not declare an ACC referral.")
+    if player.referring_team_name.strip().casefold() != franchise.name.strip().casefold():
+        raise HTTPException(status_code=409, detail="The player and franchise referral declarations conflict.")
+    if player.referred_franchise_id and player.referred_franchise_id != franchise.id:
+        raise HTTPException(status_code=409, detail="This player has already been referred to another franchise.")
+    player.referred_franchise_id = franchise.id
+    player.sold_type = "referred"
+    db.add(AuditLog(
+        action_type="REFERRAL_ASSIGNED",
+        player_id=player.id,
+        franchise_id=franchise.id,
+        performed_by=audit_actor(request, "Super Admin"),
+        reason=req.reason,
+    ))
+    db.commit()
+    await broadcast_auction_state(db)
+    return {"message": f"Referral for {player.name} assigned to {franchise.name}."}
+
 # --- Auction Core Mechanics Endpoints ---
 
 @app.get("/api/auction/state")
@@ -648,7 +867,7 @@ async def place_bid(req: schemas.BidRequest, request: Request, db: Session = Dep
     if claims.get("role") == "Captain" and str(claims.get("franchise_id")) != str(req.franchise_id):
         raise HTTPException(status_code=403, detail="Captains can bid only for their assigned franchise.")
 
-    state = db.query(AuctionState).filter(AuctionState.id == 1).first()
+    state = get_or_create_auction_state(db)
     if not state or not state.current_player_id:
         raise HTTPException(status_code=400, detail="No active player up for auction.")
 
@@ -656,12 +875,20 @@ async def place_bid(req: schemas.BidRequest, request: Request, db: Session = Dep
     franchise = db.query(Franchise).filter(Franchise.id == req.franchise_id).first()
     if not player or not franchise:
         raise HTTPException(status_code=404, detail="Player or Franchise not found.")
+    passed_ids = json.loads(state.passed_franchise_ids) if state.passed_franchise_ids else []
+    if franchise.id in passed_ids:
+        raise HTTPException(status_code=400, detail="Re-enter bidding before placing another bid.")
+    if player.payment_status != "paid" or player.sold_franchise_id or player.retained_franchise_id or player.referred_franchise_id:
+        raise HTTPException(status_code=400, detail="This player is not eligible for auction.")
+    if state.current_bidder_id == franchise.id:
+        raise HTTPException(status_code=400, detail="The current high bidder cannot bid against itself.")
 
     if not state.timer_running or state.timer_seconds <= 0:
         raise HTTPException(status_code=400, detail="Bidding is closed for this lot.")
 
     # 1. Price increment check (§11, Appendix A.6)
-    valid_price, price_msg = auction_engine.validate_bid_price(state.current_bid_price, player.base_price, req.attempted_bid)
+    current_price = state.current_bid_price if state.current_bidder_id else 0
+    valid_price, price_msg = auction_engine.validate_bid_price(current_price, player.base_price, req.attempted_bid)
     if not valid_price:
         raise HTTPException(status_code=400, detail=price_msg)
 
@@ -697,7 +924,8 @@ async def place_bid(req: schemas.BidRequest, request: Request, db: Session = Dep
     # Every accepted bid restarts the auctioneer-configured countdown.
     state.current_bid_price = req.attempted_bid
     state.current_bidder_id = franchise.id
-    state.timer_seconds = state.timer_duration_seconds
+    state.timer_duration_seconds = 20
+    state.timer_seconds = 20
     state.timer_running = True
 
     # Log action
@@ -706,7 +934,7 @@ async def place_bid(req: schemas.BidRequest, request: Request, db: Session = Dep
         player_id=player.id,
         franchise_id=franchise.id,
         amount=req.attempted_bid,
-        performed_by=f"Franchise:{franchise.short_code}" if req.performed_by == "Franchise" else req.performed_by,
+        performed_by=audit_actor(request, f"Franchise:{franchise.short_code}"),
         reason=f"Bid placed on {player.name} at {req.attempted_bid}"
     )
     db.add(log)
@@ -716,8 +944,14 @@ async def place_bid(req: schemas.BidRequest, request: Request, db: Session = Dep
     return {"message": "Bid accepted", "new_bid": req.attempted_bid, "franchise": franchise.name}
 
 @app.post("/api/auction/pass")
-async def pass_franchise(franchise_id: int, db: Session = Depends(get_db)):
-    state = db.query(AuctionState).filter(AuctionState.id == 1).first()
+async def pass_franchise(franchise_id: int, request: Request, db: Session = Depends(get_db)):
+    state = get_or_create_auction_state(db)
+    if not state or not state.current_player_id:
+        raise HTTPException(status_code=400, detail="No active lot to pass on.")
+    if state.current_bidder_id == franchise_id:
+        raise HTTPException(status_code=400, detail="The current high bidder cannot pass before the hammer.")
+    if not db.query(Franchise).filter(Franchise.id == franchise_id).first():
+        raise HTTPException(status_code=404, detail="Franchise not found.")
     passed_ids = json.loads(state.passed_franchise_ids) if state.passed_franchise_ids else []
     if franchise_id not in passed_ids:
         passed_ids.append(franchise_id)
@@ -728,7 +962,7 @@ async def pass_franchise(franchise_id: int, db: Session = Depends(get_db)):
             action_type="PASS",
             player_id=state.current_player_id,
             franchise_id=franchise_id,
-            performed_by="Franchise",
+            performed_by=audit_actor(request, f"Franchise:{franchise_id}"),
             reason="Franchise passed on current lot"
         )
         db.add(log)
@@ -738,8 +972,10 @@ async def pass_franchise(franchise_id: int, db: Session = Depends(get_db)):
     return {"message": "Franchise passed"}
 
 @app.post("/api/auction/unpass")
-async def unpass_franchise(franchise_id: int, db: Session = Depends(get_db)):
-    state = db.query(AuctionState).filter(AuctionState.id == 1).first()
+async def unpass_franchise(franchise_id: int, request: Request, db: Session = Depends(get_db)):
+    state = get_or_create_auction_state(db)
+    if not state or not state.current_player_id:
+        raise HTTPException(status_code=400, detail="No active lot to re-enter.")
     passed_ids = json.loads(state.passed_franchise_ids) if state.passed_franchise_ids else []
     if franchise_id in passed_ids:
         passed_ids.remove(franchise_id)
@@ -750,7 +986,7 @@ async def unpass_franchise(franchise_id: int, db: Session = Depends(get_db)):
             action_type="UNPASS",
             player_id=state.current_player_id,
             franchise_id=franchise_id,
-            performed_by="Franchise",
+            performed_by=audit_actor(request, f"Franchise:{franchise_id}"),
             reason="Franchise re-entered bidding"
         )
         db.add(log)
@@ -760,8 +996,9 @@ async def unpass_franchise(franchise_id: int, db: Session = Depends(get_db)):
     return {"message": "Franchise re-entered play"}
 
 @app.post("/api/auction/hammer")
-async def hammer_lot(performed_by: str = "Super Admin", db: Session = Depends(get_db)):
-    state = db.query(AuctionState).filter(AuctionState.id == 1).first()
+async def hammer_lot(request: Request, performed_by: str = "Super Admin", db: Session = Depends(get_db)):
+    performed_by = audit_actor(request, performed_by)
+    state = get_or_create_auction_state(db)
     if not state or not state.current_player_id:
         raise HTTPException(status_code=400, detail="No active lot to hammer.")
 
@@ -788,7 +1025,8 @@ async def hammer_lot(performed_by: str = "Super Admin", db: Session = Depends(ge
         res_msg = f"{player.name} SOLD to {franchise.name} for {state.current_bid_price}"
     else:
         # Unsold!
-        player.is_skipped = True
+        # Unsold players are carried to Round 2, not immediately recalled.
+        player.is_skipped = False
         log = AuditLog(
             action_type="HAMMER_UNSOLD",
             player_id=player.id,
@@ -797,6 +1035,12 @@ async def hammer_lot(performed_by: str = "Super Admin", db: Session = Depends(ge
         )
         db.add(log)
         res_msg = f"{player.name} UNSOLD"
+
+    if state.round_number == 1:
+        player.round_one_complete = True
+    else:
+        player.round_two_complete = True
+    state.timer_running = False
 
     db.commit()
 
@@ -807,13 +1051,20 @@ async def hammer_lot(performed_by: str = "Super Admin", db: Session = Depends(ge
     return {"message": res_msg}
 
 @app.post("/api/auction/skip")
-async def skip_player(performed_by: str = "Super Admin", db: Session = Depends(get_db)):
-    state = db.query(AuctionState).filter(AuctionState.id == 1).first()
+async def skip_player(request: Request, performed_by: str = "Super Admin", db: Session = Depends(get_db)):
+    performed_by = audit_actor(request, performed_by)
+    state = get_or_create_auction_state(db)
     if not state or not state.current_player_id:
         raise HTTPException(status_code=400, detail="No active player to skip.")
 
     player = db.query(Player).filter(Player.id == state.current_player_id).first()
-    player.is_skipped = True
+    if state.round_number != 1:
+        raise HTTPException(status_code=400, detail="Players cannot be skipped after Round 1.")
+    if player.skip_recalled:
+        player.round_one_complete = True
+    else:
+        player.is_skipped = True
+        player.skip_recalled = False
     
     log = AuditLog(
         action_type="SKIP",
@@ -829,7 +1080,7 @@ async def skip_player(performed_by: str = "Super Admin", db: Session = Depends(g
     return {"message": f"Skipped {player.name}"}
 
 @app.post("/api/auction/undo")
-async def undo_transaction(req: schemas.UndoRequest, db: Session = Depends(get_db)):
+async def undo_transaction(req: schemas.UndoRequest, request: Request, db: Session = Depends(get_db)):
     audit_entry = db.query(AuditLog).filter(AuditLog.id == req.audit_id).first()
     if not audit_entry:
         raise HTTPException(status_code=404, detail="Audit log entry not found.")
@@ -837,6 +1088,9 @@ async def undo_transaction(req: schemas.UndoRequest, db: Session = Depends(get_d
     if audit_entry.is_undone:
         # Appendix A.4 Case 18: Same sale undone twice -> Second attempt rejected
         raise HTTPException(status_code=400, detail="Second attempt rejected — sale has already been undone.")
+
+    if audit_entry.action_type not in {"HAMMER_SOLD", "DIRECT_ASSIGN", "ALLOT", "SCOUT"}:
+        raise HTTPException(status_code=400, detail="Only completed player assignments can be undone.")
 
     # Mark as undone
     audit_entry.is_undone = True
@@ -848,13 +1102,18 @@ async def undo_transaction(req: schemas.UndoRequest, db: Session = Depends(get_d
             player.sold_franchise_id = None
             player.sold_price = None
             player.sold_type = None
+            player.is_skipped = False
+            player.skip_recalled = False
+            state = db.query(AuctionState).filter(AuctionState.id == 1).first()
+            player.round_one_complete = state is not None and state.round_number == 2
+            player.round_two_complete = False
 
     undo_log = AuditLog(
         action_type="UNDO",
         player_id=audit_entry.player_id,
         franchise_id=audit_entry.franchise_id,
         amount=audit_entry.amount,
-        performed_by="Super Admin",
+        performed_by=audit_actor(request, "Super Admin"),
         reason=f"UNDONE Audit ID {audit_entry.id}: {req.reason}"
     )
     db.add(undo_log)
@@ -864,7 +1123,7 @@ async def undo_transaction(req: schemas.UndoRequest, db: Session = Depends(get_d
     return {"message": f"Successfully undone Audit Entry #{audit_entry.id}. All pursed, slots, and limits recalculated."}
 
 @app.post("/api/auction/direct-assign")
-async def direct_assign_player(req: schemas.DirectAssignRequest, db: Session = Depends(get_db)):
+async def direct_assign_player(req: schemas.DirectAssignRequest, request: Request, db: Session = Depends(get_db)):
     player = db.query(Player).filter(Player.id == req.player_id).first()
     franchise = db.query(Franchise).filter(Franchise.id == req.franchise_id).first()
     if not player or not franchise:
@@ -879,7 +1138,7 @@ async def direct_assign_player(req: schemas.DirectAssignRequest, db: Session = D
         player_id=player.id,
         franchise_id=franchise.id,
         amount=req.price,
-        performed_by="Super Admin",
+        performed_by=audit_actor(request, "Super Admin"),
         reason=req.reason
     )
     db.add(log)
@@ -889,16 +1148,38 @@ async def direct_assign_player(req: schemas.DirectAssignRequest, db: Session = D
     return {"message": f"Directly assigned {player.name} to {franchise.name} for {req.price} credits."}
 
 @app.post("/api/auction/relax-minimum")
-async def relax_bucket_minimum(req: schemas.RelaxMinimumRequest, db: Session = Depends(get_db)):
-    state = db.query(AuctionState).filter(AuctionState.id == 1).first()
+async def relax_bucket_minimum(req: schemas.RelaxMinimumRequest, request: Request, db: Session = Depends(get_db)):
+    state = get_or_create_auction_state(db)
+    if state.round_number != 2 or state.current_player_id:
+        raise HTTPException(status_code=400, detail="Minimums can be relaxed only after Round 2 lots are complete.")
+    pending_round_two = db.query(Player).filter(
+        Player.payment_status == "paid",
+        Player.round_one_complete.is_(True),
+        Player.round_two_complete.is_(False),
+        Player.sold_franchise_id.is_(None),
+        Player.retained_franchise_id.is_(None),
+        Player.referred_franchise_id.is_(None),
+    ).first()
+    if pending_round_two:
+        raise HTTPException(status_code=400, detail="Complete all Round 2 lots before relaxing bucket minimums.")
+    remaining_bucket_supply = db.query(Player).filter(
+        Player.bucket == req.bucket,
+        Player.payment_status == "paid",
+        Player.sold_franchise_id.is_(None),
+        Player.retained_franchise_id.is_(None),
+        Player.referred_franchise_id.is_(None),
+    ).first()
+    if remaining_bucket_supply:
+        raise HTTPException(status_code=400, detail="Bucket minimums can be relaxed only after that bucket is exhausted.")
     bucket_mins = json.loads(state.bucket_minimums_json) if state.bucket_minimums_json else dict(auction_engine.DEFAULT_BUCKET_MINIMUMS)
-    
+    if req.bucket not in bucket_mins or not 0 <= req.new_minimum <= bucket_mins[req.bucket]:
+        raise HTTPException(status_code=400, detail="Minimum relaxation must lower a known bucket requirement.")
     bucket_mins[req.bucket] = req.new_minimum
     state.bucket_minimums_json = json.dumps(bucket_mins)
 
     log = AuditLog(
         action_type="RELAX_MINIMUM",
-        performed_by="Super Admin",
+        performed_by=audit_actor(request, "Super Admin"),
         reason=f"Uniform relaxation of bucket {req.bucket} minimum to {req.new_minimum} across all franchises: {req.reason}"
     )
     db.add(log)
@@ -907,48 +1188,245 @@ async def relax_bucket_minimum(req: schemas.RelaxMinimumRequest, db: Session = D
     await broadcast_auction_state(db)
     return {"message": f"Relaxed bucket {req.bucket} minimum to {req.new_minimum} uniformly for all 11 franchises."}
 
-async def draw_next_player_internal(db: Session, state: AuctionState):
-    # Bucket sequence: B3 -> B4 -> B2 -> B5 -> B1 -> PG
-    bucket_sequence = ["B3", "B4", "B2", "B5", "B1", "PG"]
 
-    curr_idx = bucket_sequence.index(state.current_bucket) if state.current_bucket in bucket_sequence else 0
+@app.post("/api/auction/auto-allot")
+async def auto_allot_round_two(request: Request, db: Session = Depends(get_db)):
+    state = get_or_create_auction_state(db)
+    if not state or state.round_number != 2 or state.current_player_id:
+        raise HTTPException(status_code=400, detail="Auto-allotment is available only after Round 2 lots are complete.")
+    pending_round_two = db.query(Player).filter(
+        Player.payment_status == "paid",
+        Player.round_one_complete.is_(True),
+        Player.round_two_complete.is_(False),
+        Player.sold_franchise_id.is_(None),
+        Player.retained_franchise_id.is_(None),
+        Player.referred_franchise_id.is_(None),
+    ).first()
+    if pending_round_two:
+        raise HTTPException(status_code=400, detail="Complete all Round 2 lots before auto-allotment.")
 
-    # Search for next available player in current bucket
-    next_player = db.query(Player).filter(
-        Player.bucket == state.current_bucket,
+    bucket_mins = json.loads(state.bucket_minimums_json) if state.bucket_minimums_json else auction_engine.DEFAULT_BUCKET_MINIMUMS
+    franchises = db.query(Franchise).order_by(Franchise.id.asc()).all()
+    assignments = []
+
+    def available_players(bucket=None):
+        query = db.query(Player).filter(
+            Player.payment_status == "paid",
+            Player.round_one_complete.is_(True),
+            Player.sold_franchise_id.is_(None),
+            Player.retained_franchise_id.is_(None),
+            Player.referred_franchise_id.is_(None),
+        )
+        if bucket:
+            query = query.filter(Player.bucket == bucket)
+        return query.order_by(Player.random_lot_number.asc(), Player.id.asc())
+
+    def priority(franchise):
+        counts = get_franchise_bucket_counts(db, franchise.id)
+        purchases = get_franchise_auction_purchases_count(db, franchise.id)
+        mandatory = auction_engine.calculate_mandatory_slots_needed(counts, bucket_mins)
+        unfilled = max(max(0, auction_engine.MIN_AUCTION_SLOTS - purchases), mandatory)
+        return (-unfilled, calculate_franchise_purse(db, franchise.id), franchise.id)
+
+    def allot(player, franchise):
+        player.sold_franchise_id = franchise.id
+        player.sold_price = 20
+        player.sold_type = "allotted"
+        player.round_two_complete = True
+        player.is_skipped = False
+        assignments.append({"player_id": player.id, "franchise_id": franchise.id, "bucket": player.bucket})
+        db.add(AuditLog(
+            action_type="ALLOT",
+            player_id=player.id,
+            franchise_id=franchise.id,
+            amount=20,
+            performed_by=audit_actor(request, "Super Admin"),
+            reason="Round 2 auto-allotment for incomplete squad requirements.",
+        ))
+
+    for bucket, minimum in bucket_mins.items():
+        while True:
+            player = available_players(bucket).first()
+            if not player:
+                break
+            candidates = [
+                franchise for franchise in franchises
+                if get_franchise_bucket_counts(db, franchise.id).get(bucket, 0) < minimum
+                and get_franchise_total_squad_count(db, franchise.id) < auction_engine.MAX_SQUAD_SIZE
+                and calculate_franchise_purse(db, franchise.id) >= 20
+            ]
+            if not candidates:
+                break
+            allot(player, min(candidates, key=priority))
+            db.flush()
+
+    for franchise in sorted(franchises, key=priority):
+        while (
+            get_franchise_auction_purchases_count(db, franchise.id) < auction_engine.MIN_AUCTION_SLOTS
+            and get_franchise_total_squad_count(db, franchise.id) < auction_engine.MAX_SQUAD_SIZE
+            and calculate_franchise_purse(db, franchise.id) >= 20
+        ):
+            player = available_players().first()
+            if not player:
+                break
+            allot(player, franchise)
+            db.flush()
+
+    unresolved = {
+        franchise.short_code: {
+            "purchases_needed": max(0, auction_engine.MIN_AUCTION_SLOTS - get_franchise_auction_purchases_count(db, franchise.id)),
+            "bucket_counts": get_franchise_bucket_counts(db, franchise.id),
+        }
+        for franchise in franchises
+        if get_franchise_auction_purchases_count(db, franchise.id) < auction_engine.MIN_AUCTION_SLOTS
+        or auction_engine.calculate_mandatory_slots_needed(get_franchise_bucket_counts(db, franchise.id), bucket_mins) > 0
+    }
+    db.add(AuditLog(
+        action_type="AUTO_ALLOTMENT",
+        performed_by=audit_actor(request, "Super Admin"),
+        reason=f"Round 2 auto-allotment applied to {len(assignments)} players.",
+    ))
+    db.commit()
+    await broadcast_auction_state(db)
+    return {"assignments": assignments, "unresolved": unresolved}
+
+
+@app.post("/api/auction/scout")
+async def scout_player(req: schemas.ScoutRequest, request: Request, db: Session = Depends(get_db)):
+    state = db.query(AuctionState).filter(AuctionState.id == 1).with_for_update().first()
+    if not state or state.round_number != 2 or state.current_player_id:
+        raise HTTPException(status_code=400, detail="Scouting is available only after Round 2 lots are complete.")
+    pending_round_two = db.query(Player).filter(
+        Player.payment_status == "paid",
+        Player.round_one_complete.is_(True),
+        Player.round_two_complete.is_(False),
+        Player.sold_franchise_id.is_(None),
+        Player.retained_franchise_id.is_(None),
+        Player.referred_franchise_id.is_(None),
+    ).first()
+    if pending_round_two:
+        raise HTTPException(status_code=400, detail="Complete all Round 2 lots before scouting.")
+    bucket_mins = json.loads(state.bucket_minimums_json) if state.bucket_minimums_json else auction_engine.DEFAULT_BUCKET_MINIMUMS
+    if req.bucket not in bucket_mins:
+        raise HTTPException(status_code=400, detail="Scouting requires a valid quota bucket.")
+
+    player = db.query(Player).filter(Player.id == req.player_id).first()
+    franchise = db.query(Franchise).filter(Franchise.id == req.franchise_id).first()
+    if not player or not franchise:
+        raise HTTPException(status_code=404, detail="Player or Franchise not found.")
+    if player.bucket != req.bucket or player.payment_status != "paid" or player.profile_status != "completed":
+        raise HTTPException(status_code=400, detail="Scouted players must be paid, profile-verified, and in the requested bucket.")
+    if player.sold_franchise_id or player.retained_franchise_id or player.referred_franchise_id:
+        raise HTTPException(status_code=400, detail="This player is already assigned.")
+    other_supply = db.query(Player).filter(
+        Player.bucket == req.bucket,
         Player.payment_status == "paid",
         Player.sold_franchise_id.is_(None),
         Player.retained_franchise_id.is_(None),
         Player.referred_franchise_id.is_(None),
-        Player.is_skipped == False
-    ).order_by(Player.random_lot_number.asc()).first()
+        Player.id != player.id,
+    ).count()
+    if other_supply:
+        raise HTTPException(status_code=400, detail="Scouting is blocked while any other paid unsold player remains in this bucket.")
+    if get_franchise_bucket_counts(db, franchise.id).get(req.bucket, 0) >= bucket_mins[req.bucket]:
+        raise HTTPException(status_code=400, detail="This franchise has already met the bucket minimum.")
+    if calculate_franchise_purse(db, franchise.id) < 20 or get_franchise_total_squad_count(db, franchise.id) >= auction_engine.MAX_SQUAD_SIZE:
+        raise HTTPException(status_code=400, detail="The franchise cannot afford or fit another player.")
 
-    # If no unskipped player, search skipped players in current bucket
-    if not next_player:
-        next_player = db.query(Player).filter(
-            Player.bucket == state.current_bucket,
-            Player.payment_status == "paid",
-            Player.sold_franchise_id.is_(None),
-            Player.retained_franchise_id.is_(None),
-            Player.referred_franchise_id.is_(None)
-        ).order_by(Player.random_lot_number.asc()).first()
+    player.sold_franchise_id = franchise.id
+    player.sold_price = 20
+    player.sold_type = "scouted"
+    player.round_two_complete = True
+    db.add(AuditLog(
+        action_type="SCOUT",
+        player_id=player.id,
+        franchise_id=franchise.id,
+        amount=20,
+        performed_by=audit_actor(request, "Super Admin"),
+        reason=req.reason,
+    ))
+    db.commit()
+    await broadcast_auction_state(db)
+    return {"message": f"{player.name} scouted to {franchise.name} for 20 credits."}
 
-    # If bucket completed, advance to next bucket in sequence
-    if not next_player and curr_idx + 1 < len(bucket_sequence):
-        state.current_bucket = bucket_sequence[curr_idx + 1]
-        next_player = db.query(Player).filter(
+async def draw_next_player_internal(db: Session, state: AuctionState, lot_number: Optional[int] = None):
+    bucket_sequence = ["B3", "B4", "B2", "B5", "B1", "PG"]
+    available = db.query(Player).filter(
+        Player.payment_status == "paid",
+        Player.sold_franchise_id.is_(None),
+        Player.retained_franchise_id.is_(None),
+        Player.referred_franchise_id.is_(None),
+    )
+    next_player = None
+
+    if state.draw_mode == "guest" and state.round_number == 1:
+        if lot_number is None:
+            state.current_player_id = None
+            state.current_bid_price = 0
+            state.current_bidder_id = None
+            state.timer_running = False
+            state.passed_franchise_ids = "[]"
+            db.commit()
+            return
+        next_player = available.filter(
             Player.bucket == state.current_bucket,
-            Player.payment_status == "paid",
-            Player.sold_franchise_id.is_(None),
-            Player.retained_franchise_id.is_(None),
-            Player.referred_franchise_id.is_(None)
-        ).order_by(Player.random_lot_number.asc()).first()
+            Player.random_lot_number == lot_number,
+            Player.round_one_complete.is_(False),
+        ).first()
+        if not next_player:
+            raise HTTPException(status_code=404, detail="That lot number is not available in the active bucket.")
+        if next_player.is_skipped:
+            unskipped_remain = available.filter(
+                Player.bucket == state.current_bucket,
+                Player.round_one_complete.is_(False),
+                Player.is_skipped.is_(False),
+            ).first()
+            if unskipped_remain:
+                raise HTTPException(status_code=400, detail="Skipped players are recalled only after the rest of their bucket.")
+            next_player.is_skipped = False
+            next_player.skip_recalled = True
+
+    if state.round_number == 1 and state.draw_mode != "guest":
+        start_index = bucket_sequence.index(state.current_bucket) if state.current_bucket in bucket_sequence else 0
+        for bucket in bucket_sequence[start_index:]:
+            state.current_bucket = bucket
+            next_player = available.filter(
+                Player.bucket == bucket,
+                Player.round_one_complete.is_(False),
+                Player.is_skipped.is_(False),
+            ).order_by(Player.random_lot_number.asc(), Player.id.asc()).first()
+            if next_player:
+                break
+
+            next_player = available.filter(
+                Player.bucket == bucket,
+                Player.round_one_complete.is_(False),
+                Player.is_skipped.is_(True),
+                Player.skip_recalled.is_(False),
+            ).order_by(Player.random_lot_number.asc(), Player.id.asc()).first()
+            if next_player:
+                next_player.is_skipped = False
+                next_player.skip_recalled = True
+                break
+
+        if not next_player:
+            state.round_number = 2
+
+    if state.round_number == 2:
+        next_player = available.filter(
+            Player.round_one_complete.is_(True),
+            Player.round_two_complete.is_(False),
+        ).order_by(Player.random_lot_number.asc(), Player.id.asc()).first()
+        if next_player:
+            next_player.base_price = 20
+            state.current_bucket = next_player.bucket
 
     if next_player:
         state.current_player_id = next_player.id
         state.current_bid_price = 0
         state.current_bidder_id = None
-        state.timer_seconds = state.timer_duration_seconds or 30
+        state.timer_duration_seconds = 30
+        state.timer_seconds = 30
         state.timer_running = False
         state.passed_franchise_ids = "[]"
     else:
@@ -959,29 +1437,56 @@ async def draw_next_player_internal(db: Session, state: AuctionState):
     db.commit()
 
 @app.post("/api/auction/draw-next")
-async def draw_next_player(db: Session = Depends(get_db)):
-    state = db.query(AuctionState).filter(AuctionState.id == 1).first()
-    await draw_next_player_internal(db, state)
+async def draw_next_player(request: Request, lot_number: Optional[int] = Query(None), db: Session = Depends(get_db)):
+    state = get_or_create_auction_state(db)
+    await draw_next_player_internal(db, state, lot_number)
+    db.add(AuditLog(action_type="DRAW_NEXT", performed_by=audit_actor(request, "Super Admin"), reason="Next auction lot drawn."))
+    db.commit()
     await broadcast_auction_state(db)
     return {"message": "Drawn next player"}
 
-@app.post("/api/auction/set-bucket")
-async def set_active_bucket(bucket: str = Query(...), db: Session = Depends(get_db)):
-    state = db.query(AuctionState).filter(AuctionState.id == 1).first()
-    if not state:
-        raise HTTPException(status_code=404, detail="Auction state not found.")
-    state.current_bucket = bucket.upper()
+
+@app.post("/api/auction/draw-mode")
+async def set_draw_mode(mode: str, request: Request, db: Session = Depends(get_db)):
+    if mode not in {"auto", "guest"}:
+        raise HTTPException(status_code=400, detail="Draw mode must be auto or guest.")
+    state = get_or_create_auction_state(db)
+    state.draw_mode = mode
+    db.add(AuditLog(
+        action_type="DRAW_MODE",
+        performed_by=audit_actor(request, "Super Admin"),
+        reason=f"Draw mode changed to {mode}.",
+    ))
     db.commit()
+    await broadcast_auction_state(db)
+    return {"draw_mode": state.draw_mode}
+
+@app.post("/api/auction/set-bucket")
+async def set_active_bucket(bucket: str, request: Request, db: Session = Depends(get_db)):
+    state = get_or_create_auction_state(db)
+    normalized_bucket = bucket.upper()
+    if normalized_bucket not in {"B1", "B2", "B3", "B4", "B5", "PG"}:
+        raise HTTPException(status_code=400, detail="Unknown auction bucket.")
+    state.current_bucket = normalized_bucket
     await draw_next_player_internal(db, state)
+    db.add(AuditLog(action_type="SET_BUCKET", performed_by=audit_actor(request, "Super Admin"), reason=f"Active bucket set to {normalized_bucket}."))
+    db.commit()
     await broadcast_auction_state(db)
     return {"message": f"Active bucket set to {state.current_bucket} and player drawn."}
 
 @app.post("/api/auction/select-player")
-async def select_player_for_lot(player_id: int = Query(...), db: Session = Depends(get_db)):
-    state = db.query(AuctionState).filter(AuctionState.id == 1).first()
+async def select_player_for_lot(player_id: int, request: Request, db: Session = Depends(get_db)):
+    state = get_or_create_auction_state(db)
     player = db.query(Player).filter(Player.id == player_id).first()
-    if not state or not player:
-        raise HTTPException(status_code=404, detail="Auction state or Player not found.")
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    if (
+        player.payment_status != "paid"
+        or player.sold_franchise_id is not None
+        or player.retained_franchise_id is not None
+        or player.referred_franchise_id is not None
+    ):
+        raise HTTPException(status_code=400, detail="Only paid, unassigned players can be selected for auction.")
     
     state.current_player_id = player.id
     state.current_bucket = player.bucket
@@ -990,6 +1495,7 @@ async def select_player_for_lot(player_id: int = Query(...), db: Session = Depen
     state.timer_seconds = state.timer_duration_seconds or 30
     state.timer_running = False
     state.passed_franchise_ids = "[]"
+    db.add(AuditLog(action_type="SELECT_PLAYER", player_id=player.id, performed_by=audit_actor(request, "Super Admin"), reason="Player selected for the active lot."))
     db.commit()
     await broadcast_auction_state(db)
     return {"message": f"Player {player.name} ({player.roll_number}) set as active lot."}
@@ -1001,8 +1507,6 @@ def get_audit_log(db: Session = Depends(get_db)):
 @app.get("/api/export/excel")
 def export_tournament_excel(db: Session = Depends(get_db)):
     wb = openpyxl.Workbook()
-    
-    # Sheet 1: Franchises & Squads
     ws1 = wb.active
     ws1.title = "Franchises & Squads"
     ws1.append(["Franchise Name", "Code", "Faculty Coordinator", "Purse Remaining", "Squad Count", "Captain", "Vice Captain"])
@@ -1013,7 +1517,6 @@ def export_tournament_excel(db: Session = Depends(get_db)):
         vc = db.query(Player).filter(Player.retained_franchise_id == f.id, Player.retained_role == "vice_captain").first()
         purse = calculate_franchise_purse(db, f.id)
         squad_cnt = get_franchise_total_squad_count(db, f.id)
-        
         ws1.append([
             f.name,
             f.short_code,
@@ -1021,13 +1524,11 @@ def export_tournament_excel(db: Session = Depends(get_db)):
             purse,
             squad_cnt,
             cap.name if cap else "N/A",
-            vc.name if vc else "N/A"
+            vc.name if vc else "N/A",
         ])
 
-    # Sheet 2: All Players
     ws2 = wb.create_sheet(title="All Players")
     ws2.append(["Roll Number", "Name", "Course", "Branch", "Year", "Bucket", "Base Price", "Sold Price", "Sold Franchise", "Sale Type"])
-
     players = db.query(Player).all()
     for p in players:
         sold_f = db.query(Franchise).filter(Franchise.id == (p.sold_franchise_id or p.retained_franchise_id or p.referred_franchise_id)).first()

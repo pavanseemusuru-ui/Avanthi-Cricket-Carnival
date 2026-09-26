@@ -13,6 +13,7 @@ class PlayerBase(BaseModel):
     branch: str
     year_of_study: int
     year_override: Optional[int] = None
+    year_discrepancy_reported: bool = False
     bucket: str
     base_price: int
     cricheroes_url: Optional[str] = None
@@ -81,6 +82,11 @@ class PlayerRegisterRequest(BaseModel):
     roll_number: str
     name: str
     mobile_number: str
+    program: Optional[str] = None
+    branch: Optional[str] = None
+    year_of_study: Optional[int] = None
+    admission_year: Optional[int] = None
+    year_discrepancy_reported: bool = False
     photo_url: Optional[str] = None
     cricheroes_url: Optional[str] = None
     cricheroes_mobile: Optional[str] = None
@@ -99,6 +105,7 @@ class PlayerRegisterRequest(BaseModel):
     bowling_roles: Optional[str] = None
 
     is_wicket_keeper: bool = False
+    confirm_fielder_only: bool = False
     fielding_zone: Optional[str] = None
     preferred_fielding_pos: Optional[str] = None
 
@@ -162,6 +169,19 @@ class FranchiseRegisterRequest(BaseModel):
     vice_captain_name: Optional[str] = None
     vice_captain_mobile: Optional[str] = None
 
+class FranchiseUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    short_code: Optional[str] = None
+    logo_url: Optional[str] = None
+    faculty_coordinator_name: Optional[str] = None
+    faculty_coordinator_dept: Optional[str] = None
+    faculty_coordinator_photo: Optional[str] = None
+    faculty_coordinator_mobile: Optional[str] = None
+    captain_name: Optional[str] = None
+    captain_mobile: Optional[str] = None
+    vice_captain_name: Optional[str] = None
+    vice_captain_mobile: Optional[str] = None
+
 # --- Auction & Bidding Schemas ---
 
 class BidRequest(BaseModel):
@@ -173,6 +193,17 @@ class DirectAssignRequest(BaseModel):
     player_id: int
     franchise_id: int
     price: int
+    reason: str
+
+class ScoutRequest(BaseModel):
+    player_id: int
+    franchise_id: int
+    bucket: str
+    reason: str
+
+class ReferPlayerRequest(BaseModel):
+    player_id: int
+    franchise_id: int
     reason: str
 
 class UndoRequest(BaseModel):

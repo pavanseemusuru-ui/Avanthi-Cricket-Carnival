@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import type { Franchise, Player, AuctionState } from '../types';
-import { Shield, Trophy, Users, Search } from 'lucide-react';
+import { Trophy, Users } from 'lucide-react';
 
 interface SquadsLeaderboardViewProps {
   franchises: Franchise[];
@@ -139,8 +139,16 @@ export const SquadsLeaderboardView: React.FC<SquadsLeaderboardViewProps> = ({
                         <p className="font-bold text-white truncate">{p.name}</p>
                         <p className="text-[10px] text-gray-400">{p.program} &bull; {p.derived_player_type}</p>
                       </div>
-                      <span className="font-extrabold text-amber-400 text-xs">
-                        {p.sold_price !== undefined ? `${p.sold_price} pts` : 'Retained'}
+                      <span className={`font-extrabold text-xs ${p.sold_type === 'allotted' ? 'text-sky-300' : p.sold_type === 'scouted' ? 'text-violet-300' : 'text-amber-400'}`}>
+                        {p.sold_type === 'allotted'
+                          ? `Allotted · ${p.sold_price ?? 20} pts`
+                          : p.sold_type === 'scouted'
+                            ? `Scouted · ${p.sold_price ?? 20} pts`
+                            : p.sold_type === 'referred'
+                              ? 'Referred · Free'
+                              : p.sold_type === 'sold'
+                                ? `Sold · ${p.sold_price ?? 0} pts`
+                                : p.retained_role ? `${p.retained_role} · Retained` : 'Retained'}
                       </span>
                     </div>
                   ))}

@@ -72,9 +72,13 @@ def calculate_max_permissible_bid(
     """
     Calculates the maximum permissible bid for a franchise (§12.1).
     """
-    # If franchise already has 15 or more auction purchases, no reserved purse for minimum squad apply
     if auction_purchases_count >= MIN_AUCTION_SLOTS:
-        return purse
+        mandatory_needed_after = calculate_mandatory_slots_needed(
+            bucket_counts,
+            bucket_minimums,
+            player_bucket,
+        )
+        return max(0, purse - MIN_PLAYER_PRICE * mandatory_needed_after)
 
     # If we are evaluating for a specific player purchase:
     # 1. New slots bought count = auction_purchases_count + 1
@@ -108,10 +112,6 @@ def check_bucket_eligibility(
     # 1. Total squad size limit check
     if total_squad_count + 1 > MAX_SQUAD_SIZE:
         return False, f"Blocked — squad size limit of {MAX_SQUAD_SIZE} exceeded."
-
-    # 2. If team already has 15+ auction purchases, no slot restriction applies
-    if auction_purchases_count >= MIN_AUCTION_SLOTS:
-        return True, "Allowed"
 
     # 3. Open slots remaining to reach 15 after acquiring this player
     new_purchases_count = auction_purchases_count + 1

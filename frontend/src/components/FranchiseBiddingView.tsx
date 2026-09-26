@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import type { AuctionState, Franchise } from '../types';
 import { api } from '../services/api';
-import { Smartphone, Zap, AlertCircle, Shield, CheckCircle, LogOut } from 'lucide-react';
+import { Smartphone, Zap, AlertCircle, Shield, LogOut, Clock } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 interface FranchiseBiddingViewProps {
@@ -108,7 +108,7 @@ export const FranchiseBiddingView: React.FC<FranchiseBiddingViewProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-6 bg-gradient-to-r from-gray-900 via-indigo-950 to-gray-900 p-4 rounded-2xl border border-indigo-500/30 text-center w-full md:w-auto justify-around">
+            <div className="flex flex-wrap items-center gap-6 bg-gradient-to-r from-gray-900 via-indigo-950 to-gray-900 p-4 rounded-2xl border border-indigo-500/40 text-center w-full md:w-auto justify-around shadow-xl">
               <div>
                 <p className="text-[10px] text-gray-400 uppercase font-semibold">Base Price</p>
                 <p className="text-base font-bold text-gray-300">{activePlayer.base_price} pts</p>
@@ -129,6 +129,22 @@ export const FranchiseBiddingView: React.FC<FranchiseBiddingViewProps> = ({
               <div>
                 <p className="text-[10px] text-emerald-400 uppercase font-bold">Next Bid Required</p>
                 <p className="text-2xl font-black text-emerald-300">{nextRequiredBid} pts</p>
+              </div>
+
+              {/* Prominent Large Timer Box */}
+              <div className="border-l border-gray-800 pl-6 text-center">
+                <p className="text-[10px] text-pink-400 uppercase font-black tracking-widest flex items-center justify-center gap-1">
+                  <Clock className="w-3.5 h-3.5 inline animate-spin-slow" /> Timer
+                </p>
+                <span className={`text-4xl md:text-5xl font-black font-mono tracking-tighter block mt-0.5 ${
+                  (auctionState?.timer_seconds ?? 30) <= 5
+                    ? 'text-red-500 animate-pulse scale-110 drop-shadow-[0_0_15px_rgba(239,68,68,0.9)]'
+                    : (auctionState?.timer_seconds ?? 30) <= 10
+                    ? 'text-amber-400'
+                    : 'text-emerald-400'
+                }`}>
+                  {String(auctionState?.timer_seconds ?? 30).padStart(2, '0')}s
+                </span>
               </div>
             </div>
           </div>
@@ -153,7 +169,7 @@ export const FranchiseBiddingView: React.FC<FranchiseBiddingViewProps> = ({
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {franchises.map((f) => {
             const isCurrentBidder = currentBidder?.id === f.id;
-            const isPassed = auctionState?.passed_franchise_ids.includes(f.id);
+            const isPassed = Boolean(auctionState?.passed_franchise_ids?.includes(f.id));
             const maxBid = f.max_permissible_bid ?? 1000;
             const isBlocked = nextRequiredBid > maxBid || f.is_blocked;
             const isSelected = selectedFranchiseId === f.id;

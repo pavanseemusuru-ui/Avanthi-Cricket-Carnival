@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import type { AuctionState, Franchise, Player, AuthRole } from '../types';
 import { api } from '../services/api';
-import { AlertTriangle, Search, Shield, Trophy, Flame, Zap } from 'lucide-react';
+import { AlertTriangle, Search, Shield, Trophy, Flame, Zap, Clock } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 interface PublicViewProps {
@@ -230,39 +230,43 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
                 </div>
 
                 {/* Pricing, Current Bid & Prominent Auction Timer */}
-                <div className="bg-gradient-to-r from-gray-900 via-indigo-950/60 to-gray-900 p-4 rounded-2xl border border-indigo-500/40 grid grid-cols-1 sm:grid-cols-3 gap-4 items-center">
+                <div className="bg-gradient-to-r from-gray-900 via-indigo-950/80 to-gray-900 p-5 rounded-2xl border border-indigo-500/50 grid grid-cols-1 sm:grid-cols-3 gap-4 items-center shadow-xl">
                   <div>
-                    <p className="text-[10px] text-gray-400 uppercase font-semibold">Base Price</p>
-                    <p className="text-lg font-black text-gray-300">{activePlayer.base_price} pts</p>
+                    <p className="text-xs text-gray-400 uppercase font-semibold">Base Price</p>
+                    <p className="text-xl font-black text-gray-200">{activePlayer.base_price} pts</p>
                   </div>
 
                   <div>
-                    <p className="text-[10px] text-amber-400 uppercase font-extrabold">Current Highest Bid</p>
-                    <p className="text-2xl font-black text-amber-400">{auctionState?.current_bid_price || activePlayer.base_price} pts</p>
+                    <p className="text-xs text-amber-400 uppercase font-extrabold">Current Highest Bid</p>
+                    <p className="text-3xl font-black text-amber-400">{auctionState?.current_bid_price || activePlayer.base_price} pts</p>
                     {currentBidder && (
-                      <span className="text-[10px] text-indigo-300 font-bold block truncate">
+                      <span className="text-xs text-indigo-300 font-extrabold block truncate mt-0.5">
                         {currentBidder.name} ({currentBidder.short_code})
                       </span>
                     )}
                   </div>
 
                   {/* Prominent Large Digital Timer Display */}
-                  <div className="text-center sm:text-right border-t sm:border-t-0 sm:border-l border-gray-800 pt-2 sm:pt-0 sm:pl-4">
-                    <p className="text-[10px] text-pink-400 uppercase font-extrabold tracking-wider">Round Timer</p>
-                    <div className="flex items-center justify-center sm:justify-end space-x-2">
+                  <div className="text-center sm:text-right border-t sm:border-t-0 sm:border-l border-gray-800 pt-3 sm:pt-0 sm:pl-4">
+                    <p className="text-xs text-pink-400 uppercase font-black tracking-widest flex items-center justify-center sm:justify-end gap-1">
+                      <Clock className="w-3.5 h-3.5 inline animate-spin-slow" /> Auction Timer
+                    </p>
+                    <div className="flex items-center justify-center sm:justify-end space-x-2 mt-1">
                       <div
-                        className={`text-4xl font-black font-mono tracking-tight transition-all duration-300 ${
+                        className={`text-5xl md:text-6xl font-black font-mono tracking-tighter transition-all duration-300 ${
                           (auctionState?.timer_seconds ?? 30) <= 5
-                            ? 'text-red-500 animate-pulse scale-110 drop-shadow-[0_0_12px_rgba(239,68,68,0.8)]'
+                            ? 'text-red-500 animate-pulse scale-115 drop-shadow-[0_0_20px_rgba(239,68,68,1)]'
                             : (auctionState?.timer_seconds ?? 30) <= 10
-                            ? 'text-amber-400'
-                            : 'text-emerald-400'
+                            ? 'text-amber-400 drop-shadow-[0_0_12px_rgba(251,191,36,0.6)]'
+                            : 'text-emerald-400 drop-shadow-[0_0_12px_rgba(52,211,153,0.6)]'
                         }`}
                       >
                         {String(auctionState?.timer_seconds ?? 30).padStart(2, '0')}s
                       </div>
                     </div>
-                    <p className="text-[9px] text-gray-500 font-medium">Resets on every new bid</p>
+                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mt-1">
+                      {auctionState?.is_paused ? 'Paused' : auctionState?.timer_running ? 'Timer Ticking' : 'Awaiting Bid'}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -289,7 +293,7 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               {franchises.map((f) => {
                 const isCurrentBidder = currentBidder?.id === f.id;
-                const isPassed = auctionState?.passed_franchise_ids.includes(f.id);
+                const isPassed = Boolean(auctionState?.passed_franchise_ids?.includes(f.id));
 
                 return (
                   <div

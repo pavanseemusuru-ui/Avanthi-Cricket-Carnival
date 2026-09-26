@@ -8,6 +8,7 @@ from app.auction_engine import (
     DEFAULT_BUCKET_MINIMUMS
 )
 from app.roll_parser import parse_roll_number
+from app.seed import generate_sample_players
 
 # ==========================================
 # A.1 Maximum Permissible Bid (Cases 1-6)
@@ -87,6 +88,22 @@ def test_case_6_max_bid_600_purse_15_bought_no_restriction():
     )
     assert max_bid == 600
 
+
+def test_max_bid_after_fifteen_purchases_still_reserves_unfilled_bucket_slots():
+    counts = {"B1": 2, "B2": 2, "B3": 2, "B4": 2, "B5": 1}
+    assert calculate_max_permissible_bid(
+        purse=100,
+        auction_purchases_count=15,
+        bucket_counts=counts,
+        player_bucket="B5",
+    ) == 100
+    assert calculate_max_permissible_bid(
+        purse=100,
+        auction_purchases_count=15,
+        bucket_counts=counts,
+        player_bucket="PG",
+    ) == 80
+
 # ==========================================
 # A.2 Bucket Eligibility (Cases 7-10)
 # ==========================================
@@ -143,6 +160,17 @@ def test_case_10_eligibility_20_credits_1_unfilled_diploma_bids_diploma():
         target_player_bucket="B5"
     )
     assert eligible is True
+
+
+def test_bucket_minimum_still_blocks_wrong_bucket_after_fifteen_purchases():
+    counts = {"B1": 2, "B2": 2, "B3": 2, "B4": 2, "B5": 1}
+    eligible, _ = check_bucket_eligibility(
+        total_squad_count=17,
+        auction_purchases_count=15,
+        bucket_counts=counts,
+        target_player_bucket="PG",
+    )
+    assert eligible is False
 
 # ==========================================
 # A.3 Scarcity Warnings (Cases 11-15)
@@ -258,3 +286,10 @@ def test_case_28_no_jump_bidding_rejected():
     valid, msg = validate_bid_price(current_price=50, base_price=20, attempted_bid=150)
     assert valid is False
     assert "no jump bidding" in msg.lower()
+
+
+def test_seeded_lot_numbers_are_unique_and_scoped_to_each_bucket():
+    players = generate_sample_players()
+    for bucket in {player["bucket"] for player in players}:
+        numbers = [player["random_lot_number"] for player in players if player["bucket"] == bucket]
+        assert sorted(numbers) == list(range(1, len(numbers) + 1))

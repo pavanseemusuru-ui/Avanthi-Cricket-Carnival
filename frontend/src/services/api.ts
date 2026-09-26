@@ -162,6 +162,31 @@ export const api = {
     return handleResponse<Franchise>(res, 'Franchise registration failed');
   },
 
+  updateFranchise: async (franchiseId: number, data: any): Promise<{ message: string }> => {
+    const res = await apiFetch(`${API_BASE}/franchises/${franchiseId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return handleResponse<{ message: string }>(res, 'Franchise update failed');
+  },
+
+  deleteFranchise: async (franchiseId: number): Promise<{ message: string }> => {
+    const res = await apiFetch(`${API_BASE}/franchises/${franchiseId}`, {
+      method: 'DELETE',
+    });
+    return handleResponse<{ message: string }>(res, 'Franchise deletion failed');
+  },
+
+  referPlayer: async (playerId: number, franchiseId: number, reason: string) => {
+    const res = await apiFetch(`${API_BASE}/franchises/refer-player`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ player_id: playerId, franchise_id: franchiseId, reason }),
+    });
+    return handleResponse<{ message: string }>(res, 'Referral assignment failed');
+  },
+
   // Auction Controls
   getAuctionState: async (): Promise<AuctionState> => {
     const res = await apiFetch(`${API_BASE}/auction/state`);
@@ -224,9 +249,29 @@ export const api = {
     return handleResponse<any>(res, 'Relax minimum failed');
   },
 
-  drawNextPlayer: async () => {
-    const res = await apiFetch(`${API_BASE}/auction/draw-next`, { method: 'POST' });
+  autoAllotRoundTwo: async () => {
+    const res = await apiFetch(`${API_BASE}/auction/auto-allot`, { method: 'POST' });
+    return handleResponse<{ assignments: Array<{ player_id: number; franchise_id: number; bucket: string }>; unresolved: Record<string, unknown> }>(res, 'Round 2 auto-allotment failed');
+  },
+
+  scoutPlayer: async (playerId: number, franchiseId: number, bucket: string, reason: string) => {
+    const res = await apiFetch(`${API_BASE}/auction/scout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ player_id: playerId, franchise_id: franchiseId, bucket, reason }),
+    });
+    return handleResponse<{ message: string }>(res, 'Scouting failed');
+  },
+
+  drawNextPlayer: async (lotNumber?: number) => {
+    const query = lotNumber === undefined ? '' : `?lot_number=${lotNumber}`;
+    const res = await apiFetch(`${API_BASE}/auction/draw-next${query}`, { method: 'POST' });
     return handleResponse<any>(res, 'Draw next failed');
+  },
+
+  setDrawMode: async (mode: 'auto' | 'guest') => {
+    const res = await apiFetch(`${API_BASE}/auction/draw-mode?mode=${mode}`, { method: 'POST' });
+    return handleResponse<{ draw_mode: 'auto' | 'guest' }>(res, 'Draw mode update failed');
   },
 
   getAuditLog: async (): Promise<AuditLog[]> => {

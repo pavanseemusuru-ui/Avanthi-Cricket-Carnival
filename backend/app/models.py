@@ -34,6 +34,7 @@ class Player(Base):
     branch = Column(String, nullable=False)                       # ECE, CSE, CM, etc.
     year_of_study = Column(Integer, nullable=False)               # 1, 2, 3, 4
     year_override = Column(Integer, nullable=True)                # Super Admin override for detained
+    year_discrepancy_reported = Column(Boolean, default=False)
     bucket = Column(String, nullable=False)                       # B1, B2, B3, B4, B5, PG
     base_price = Column(Integer, nullable=False, default=20)
     
@@ -91,6 +92,9 @@ class Player(Base):
     sold_type = Column(String, nullable=True)                     # sold, allotted, scouted, retained, referred
     
     is_skipped = Column(Boolean, default=False)
+    skip_recalled = Column(Boolean, default=False)
+    round_one_complete = Column(Boolean, default=False)
+    round_two_complete = Column(Boolean, default=False)
     random_lot_number = Column(Integer, nullable=True)
 
 class AuctionState(Base):

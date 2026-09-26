@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import type { AuctionState, AdminPlayer, AdminFranchise, AuthRole } from '../types';
 import { api } from '../services/api';
-import { ShieldCheck, Gavel, SkipForward, RotateCcw, Sliders, UserCheck, AlertCircle } from 'lucide-react';
+import { ShieldCheck, Gavel, SkipForward, RotateCcw, Sliders, UserCheck, AlertCircle, Edit, Trash2, X } from 'lucide-react';
 
 interface AdminControlViewProps {
   auctionState: AuctionState | null;
@@ -22,7 +22,7 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'auction' | 'players' | 'franchises' | 'override'>(() => adminRole === 'Operator' ? 'players' : 'auction');
   const visibleTabs: Array<'auction' | 'players' | 'franchises' | 'override'> = adminRole === 'Operator'
-    ? ['players', 'franchises']
+    ? ['auction', 'players', 'franchises']
     : adminRole === 'Admin'
       ? ['auction', 'players', 'franchises']
       : ['auction', 'players', 'franchises', 'override'];
@@ -32,6 +32,7 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
   const [directFranchiseId, setDirectFranchiseId] = useState<number>(franchises[0]?.id || 1);
   const [directPrice, setDirectPrice] = useState<number>(20);
   const [directReason, setDirectReason] = useState<string>('Super Admin Direct Assignment');
+  const [assistedBidFranchiseId, setAssistedBidFranchiseId] = useState<number>(franchises[0]?.id || 1);
 
   // Undo State
   const [undoAuditId, setUndoAuditId] = useState<number | ''>('');
@@ -45,6 +46,7 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
   // Override Year State
   const [overridePlayerId, setOverridePlayerId] = useState<number>(adminPlayers[0]?.id || 1);
   const [overrideYearVal, setOverrideYearVal] = useState<number>(2);
+  const [guestLotNumber, setGuestLotNumber] = useState<number | ''>('');
 
   // Quick Resolve Profile State
   const [resolvePlayerId, setResolvePlayerId] = useState<number | null>(null);
@@ -64,19 +66,25 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
   const [newViceCaptainMobile, setNewViceCaptainMobile] = useState('');
   const [showAddFranchiseForm, setShowAddFranchiseForm] = useState(false);
 
-  const [adminMsg, setAdminMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  // Franchise Edit Form State
+  const [editingFranchiseId, setEditingFranchiseId] = useState<number | null>(null);
+  const [editFranchiseName, setEditFranchiseName] = useState('');
+  const [editFranchiseCode, setEditFranchiseCode] = useState('');
+  const [editFranchiseLogo, setEditFranchiseLogo] = useState('');
+  const [editFacultyName, setEditFacultyName] = useState('');
+  const [editFacultyDept, setEditFacultyDept] = useState('');
+  const [editFacultyMobile, setEditFacultyMobile] = useState('');
+  const [editCaptainName, setEditCaptainName] = useState('');
+  const [editCaptainMobile, setEditCaptainMobile] = useState('');
+  const [editViceCaptainName, setEditViceCaptainName] = useState('');
+  const [editViceCaptainMobile, setEditViceCaptainMobile] = useState('');
 
-  useEffect(() => {
-    if (adminPlayers.length && !adminPlayers.some((player) => player.id === directPlayerId)) {
-      setDirectPlayerId(adminPlayers[0].id);
-    }
-    if (franchises.length && !franchises.some((franchise) => franchise.id === directFranchiseId)) {
-      setDirectFranchiseId(franchises[0].id);
-    }
-  }, [adminPlayers, franchises, directPlayerId, directFranchiseId]);
+  const [adminMsg, setAdminMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const activePlayer = auctionState?.current_player;
   const currentBidder = auctionState?.current_bidder;
+  const selectedDirectPlayerId = adminPlayers.some((player) => player.id === directPlayerId) ? directPlayerId : adminPlayers[0]?.id || 1;
+  const selectedDirectFranchiseId = franchises.some((franchise) => franchise.id === directFranchiseId) ? directFranchiseId : franchises[0]?.id || 1;
 
   const handleHammer = async () => {
     setAdminMsg(null);
@@ -86,6 +94,19 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
       onRefreshState();
     } catch (err: any) {
       setAdminMsg({ type: 'error', text: err.message || 'Hammer action failed' });
+    }
+  };
+
+  const handleAssistedBid = async () => {
+    const franchise = franchises.find((item) => item.id === assistedBidFranchiseId);
+    if (!franchise || !auctionState) return;
+    setAdminMsg(null);
+    try {
+      const result = await api.placeBid(franchise.id, auctionState.next_required_bid, franchise.short_code);
+      setAdminMsg({ type: 'success', text: `Recorded bid of ${result.new_bid} for ${franchise.name}.` });
+      onRefreshState();
+    } catch (err: any) {
+      setAdminMsg({ type: 'error', text: err.message || 'Assisted bid failed' });
     }
   };
 
@@ -116,11 +137,41 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
 
   const handleDrawNext = async () => {
     setAdminMsg(null);
+    if (auctionState?.draw_mode === 'guest' && guestLotNumber === '') {
+      setAdminMsg({ type: 'error', text: 'Enter the guest-called lot number for the active bucket.' });
+      return;
+    }
     try {
-      await api.drawNextPlayer();
+      await api.drawNextPlayer(auctionState?.draw_mode === 'guest' ? Number(guestLotNumber) : undefined);
+      setGuestLotNumber('');
       onRefreshState();
     } catch (err: any) {
       setAdminMsg({ type: 'error', text: err.message || 'Draw next failed' });
+    }
+  };
+
+  const handleSetDrawMode = async (mode: 'auto' | 'guest') => {
+    setAdminMsg(null);
+    try {
+      await api.setDrawMode(mode);
+      onRefreshState();
+    } catch (err: any) {
+      setAdminMsg({ type: 'error', text: err.message || 'Draw mode update failed' });
+    }
+  };
+
+  const handleAutoAllot = async () => {
+    setAdminMsg(null);
+    try {
+      const result = await api.autoAllotRoundTwo();
+      const unresolvedCount = Object.keys(result.unresolved).length;
+      setAdminMsg({
+        type: unresolvedCount ? 'error' : 'success',
+        text: `Allotted ${result.assignments.length} player(s). ${unresolvedCount} franchise(s) still need a bucket minimum or auction purchase.`,
+      });
+      onRefreshState();
+    } catch (err: any) {
+      setAdminMsg({ type: 'error', text: err.message || 'Auto-allotment failed' });
     }
   };
 
@@ -128,11 +179,24 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
     e.preventDefault();
     setAdminMsg(null);
     try {
-      const res = await api.directAssignPlayer(directPlayerId, directFranchiseId, directPrice, directReason);
+      const res = await api.directAssignPlayer(selectedDirectPlayerId, selectedDirectFranchiseId, directPrice, directReason);
       setAdminMsg({ type: 'success', text: res.message });
       onRefreshState();
     } catch (err: any) {
       setAdminMsg({ type: 'error', text: err.message || 'Direct assign failed' });
+    }
+  };
+
+  const handleScoutPlayer = async () => {
+    const player = adminPlayers.find((item) => item.id === selectedDirectPlayerId);
+    if (!player) return;
+    setAdminMsg(null);
+    try {
+      const result = await api.scoutPlayer(player.id, selectedDirectFranchiseId, player.bucket, directReason);
+      setAdminMsg({ type: 'success', text: result.message });
+      onRefreshState();
+    } catch (err: any) {
+      setAdminMsg({ type: 'error', text: err.message || 'Scouting failed' });
     }
   };
 
@@ -183,6 +247,17 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
     }
   };
 
+  const handleAssignReferral = async (player: AdminPlayer, franchise: AdminFranchise) => {
+    setAdminMsg(null);
+    try {
+      const result = await api.referPlayer(player.id, franchise.id, 'Verified both player and franchise ACC referral declarations.');
+      setAdminMsg({ type: 'success', text: result.message });
+      onRefreshState();
+    } catch (err: any) {
+      setAdminMsg({ type: 'error', text: err.message || 'Referral assignment failed' });
+    }
+  };
+
   const handleUpdateTimer = async (durationSec?: number, action?: string) => {
     setAdminMsg(null);
     try {
@@ -219,6 +294,57 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
       onRefreshState();
     } catch (err: any) {
       setAdminMsg({ type: 'error', text: err.message || 'Franchise creation failed' });
+    }
+  };
+
+  const handleStartEditFranchise = (f: AdminFranchise) => {
+    setEditingFranchiseId(f.id);
+    setEditFranchiseName(f.name);
+    setEditFranchiseCode(f.short_code);
+    setEditFranchiseLogo(f.logo_url || '');
+    setEditFacultyName(f.faculty_coordinator_name || '');
+    setEditFacultyDept(f.faculty_coordinator_dept || '');
+    setEditFacultyMobile(f.faculty_coordinator_mobile || '');
+    setEditCaptainName(f.captain_name || '');
+    setEditCaptainMobile(f.captain_mobile || '');
+    setEditViceCaptainName(f.vice_captain_name || '');
+    setEditViceCaptainMobile(f.vice_captain_mobile || '');
+  };
+
+  const handleUpdateFranchiseSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingFranchiseId) return;
+    setAdminMsg(null);
+    try {
+      const res = await api.updateFranchise(editingFranchiseId, {
+        name: editFranchiseName,
+        short_code: editFranchiseCode.toUpperCase(),
+        logo_url: editFranchiseLogo || undefined,
+        faculty_coordinator_name: editFacultyName,
+        faculty_coordinator_dept: editFacultyDept,
+        faculty_coordinator_mobile: editFacultyMobile,
+        captain_name: editCaptainName || undefined,
+        captain_mobile: editCaptainMobile || undefined,
+        vice_captain_name: editViceCaptainName || undefined,
+        vice_captain_mobile: editViceCaptainMobile || undefined,
+      });
+      setAdminMsg({ type: 'success', text: res.message });
+      setEditingFranchiseId(null);
+      onRefreshState();
+    } catch (err: any) {
+      setAdminMsg({ type: 'error', text: err.message || 'Franchise update failed' });
+    }
+  };
+
+  const handleDeleteFranchise = async (franchiseId: number, name: string) => {
+    if (!window.confirm(`Are you sure you want to delete "${name}"? This will unassign its players.`)) return;
+    setAdminMsg(null);
+    try {
+      const res = await api.deleteFranchise(franchiseId);
+      setAdminMsg({ type: 'success', text: res.message });
+      onRefreshState();
+    } catch (err: any) {
+      setAdminMsg({ type: 'error', text: err.message || 'Franchise deletion failed' });
     }
   };
 
@@ -288,54 +414,53 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
           {/* Live Lot & Hammer Console (7 cols) */}
           <div className="lg:col-span-7 glass-panel rounded-3xl p-6 border border-gray-800 space-y-6 shadow-2xl">
             {/* Timer Configuration Bar */}
-            <div className="bg-gray-900/90 rounded-2xl p-4 border border-indigo-500/30 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-black text-pink-400 uppercase tracking-wider">
-                  Auction Round Timer Control
-                </span>
-                <span className="text-xs font-mono font-bold text-emerald-400">
-                  Current: {auctionState?.timer_seconds ?? 30}s / ({auctionState?.timer_duration_seconds ?? 30}s default)
-                </span>
+            <div className="bg-gray-900/90 rounded-2xl p-5 border border-indigo-500/40 space-y-4 shadow-xl">
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div>
+                  <span className="text-xs font-black text-pink-400 uppercase tracking-widest block">
+                    Auction Round Timer Control
+                  </span>
+                  <span className="text-xs font-bold text-gray-400 mt-1 block">
+                    30s opening bid / 20s per subsequent bid
+                  </span>
+                </div>
+
+                {/* Big Timer Display */}
+                <div className="flex items-center space-x-3 bg-black/60 px-5 py-2.5 rounded-2xl border border-pink-500/30">
+                  <span className="text-xs font-bold text-gray-400 uppercase">Live:</span>
+                  <span
+                    className={`text-4xl md:text-5xl font-black font-mono tracking-tighter ${
+                      (auctionState?.timer_seconds ?? 30) <= 5
+                        ? 'text-red-500 animate-pulse drop-shadow-[0_0_15px_rgba(239,68,68,1)]'
+                        : (auctionState?.timer_seconds ?? 30) <= 10
+                        ? 'text-amber-400'
+                        : 'text-emerald-400'
+                    }`}
+                  >
+                    {String(auctionState?.timer_seconds ?? 30).padStart(2, '0')}s
+                  </span>
+                </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center space-x-1.5 text-xs font-bold">
-                  <span className="text-gray-400">Duration:</span>
-                  {[15, 30, 45, 60].map((dur) => (
-                    <button
-                      key={dur}
-                      onClick={() => handleUpdateTimer(dur, 'reset')}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${
-                        (auctionState?.timer_duration_seconds ?? 30) === dur
-                          ? 'bg-pink-600 text-white border-pink-400'
-                          : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700'
-                      }`}
-                    >
-                      {dur}s
-                    </button>
-                  ))}
-                </div>
-
-                <div className="flex items-center space-x-2">
-                  <button
-                    onClick={() => handleUpdateTimer(undefined, 'start')}
-                    className="px-3 py-1 rounded-lg text-xs font-extrabold bg-emerald-600 text-white hover:bg-emerald-500"
-                  >
-                    Start Timer
-                  </button>
-                  <button
-                    onClick={() => handleUpdateTimer(undefined, auctionState?.is_paused ? 'resume' : 'pause')}
-                    className="px-3 py-1 rounded-lg text-xs font-extrabold bg-amber-600 text-white hover:bg-amber-500"
-                  >
-                    {auctionState?.is_paused ? 'Resume' : 'Pause'}
-                  </button>
-                  <button
-                    onClick={() => handleUpdateTimer(undefined, 'reset')}
-                    className="px-3 py-1 rounded-lg text-xs font-extrabold bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700"
-                  >
-                    Reset Timer
-                  </button>
-                </div>
+              <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-gray-800">
+                <button
+                  onClick={() => handleUpdateTimer(undefined, 'start')}
+                  className="px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider bg-emerald-600 text-white hover:bg-emerald-500 shadow-lg transition"
+                >
+                  Start Timer
+                </button>
+                <button
+                  onClick={() => handleUpdateTimer(undefined, auctionState?.is_paused ? 'resume' : 'pause')}
+                  className="px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider bg-amber-600 text-white hover:bg-amber-500 shadow-lg transition"
+                >
+                  {auctionState?.is_paused ? 'Resume' : 'Pause'}
+                </button>
+                <button
+                  onClick={() => handleUpdateTimer(undefined, 'reset')}
+                  className="px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700 shadow-lg transition"
+                >
+                  Reset Timer
+                </button>
               </div>
             </div>
 
@@ -386,6 +511,14 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
                     <span>SKIP PLAYER</span>
                   </button>
                 </div>
+                <div className="grid grid-cols-[1fr_auto] gap-2 border-t border-gray-800 pt-3">
+                  <select value={assistedBidFranchiseId} onChange={(event) => setAssistedBidFranchiseId(Number(event.target.value))} className="glass-input rounded-xl px-3 py-2 text-xs bg-gray-900 text-white">
+                    {franchises.map((franchise) => <option key={franchise.id} value={franchise.id}>{franchise.name}</option>)}
+                  </select>
+                  <button type="button" onClick={handleAssistedBid} disabled={!auctionState?.timer_running || !franchises.length} className="px-4 py-2 rounded-xl bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-xs font-bold text-white">
+                    BID FOR TEAM
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="py-12 text-center text-gray-500 space-y-4">
@@ -401,20 +534,40 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
 
             {/* Quick Draw Next Button */}
             <div className="flex items-center justify-between pt-2 border-t border-gray-800">
-              <span className="text-xs text-gray-400 font-semibold">Draw Mode: <strong className="text-white uppercase">{auctionState?.draw_mode || 'auto'}</strong></span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-400 font-semibold">Draw mode</span>
+                {(['auto', 'guest'] as const).map((mode) => (
+                  <button key={mode} type="button" onClick={() => handleSetDrawMode(mode)} aria-pressed={auctionState?.draw_mode === mode} className={`px-3 py-1.5 rounded-lg text-xs font-bold capitalize ${auctionState?.draw_mode === mode ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-300'}`}>
+                    {mode}
+                  </button>
+                ))}
+              </div>
               <button
                 onClick={handleDrawNext}
                 className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white text-xs font-bold rounded-xl border border-gray-700"
               >
-                Draw Next Lot
+                {auctionState?.draw_mode === 'guest' ? 'Call Lot Number' : 'Draw Next Lot'}
               </button>
             </div>
+            {auctionState?.draw_mode === 'guest' && (
+              <label className="block text-xs text-gray-300">Guest-called number in bucket {auctionState.current_bucket}
+                <input type="number" min="1" value={guestLotNumber} onChange={(event) => setGuestLotNumber(event.target.value ? Number(event.target.value) : '')} className="mt-1 w-full glass-input rounded-xl px-3 py-2 text-xs" />
+              </label>
+            )}
+            {adminRole === 'Super Admin' && auctionState?.round_number === 2 && !activePlayer && (
+              <button
+                onClick={handleAutoAllot}
+                className="w-full py-3 bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-extrabold rounded-xl border border-emerald-500"
+              >
+                COMPLETE ROUND 2 WITH AUTO-ALLOTMENT
+              </button>
+            )}
           </div>
 
           {/* Special Administrative Actions (5 cols) */}
           <div className="lg:col-span-5 space-y-6">
             {/* Safe Undo Box (§12.4) */}
-            <div className="glass-panel rounded-3xl p-5 border border-purple-500/30 space-y-3 shadow-xl">
+            {adminRole === 'Super Admin' && <div className="glass-panel rounded-3xl p-5 border border-purple-500/30 space-y-3 shadow-xl">
               <h4 className="text-sm font-extrabold text-purple-300 flex items-center space-x-2">
                 <RotateCcw className="w-4 h-4 text-purple-400" />
                 <span>Safe Audit-Backed Undo (§12.4)</span>
@@ -445,9 +598,9 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
                   EXECUTE SAFE UNDO
                 </button>
               </form>
-            </div>
+            </div>}
 
-            {adminRole !== 'Operator' && (
+            {adminRole === 'Super Admin' && (
               <div className="glass-panel rounded-3xl p-5 border border-emerald-500/30 space-y-3 shadow-xl">
                 <h4 className="text-sm font-extrabold text-emerald-300 flex items-center space-x-2">
                   <UserCheck className="w-4 h-4 text-emerald-400" />
@@ -455,7 +608,7 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
                 </h4>
                 <form onSubmit={handleDirectAssign} className="space-y-3">
                   <select
-                    value={directPlayerId}
+                    value={selectedDirectPlayerId}
                     onChange={(event) => setDirectPlayerId(Number(event.target.value))}
                     className="w-full glass-input rounded-xl px-3 py-2 text-xs bg-gray-900 text-white"
                     required
@@ -466,7 +619,7 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
                     ))}
                   </select>
                   <select
-                    value={directFranchiseId}
+                    value={selectedDirectFranchiseId}
                     onChange={(event) => setDirectFranchiseId(Number(event.target.value))}
                     className="w-full glass-input rounded-xl px-3 py-2 text-xs bg-gray-900 text-white"
                     required
@@ -500,12 +653,22 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
                   >
                     ASSIGN PLAYER
                   </button>
+                  {auctionState?.round_number === 2 && !activePlayer && (
+                    <button
+                      type="button"
+                      onClick={handleScoutPlayer}
+                      disabled={!adminPlayers.length || !franchises.length}
+                      className="w-full py-2.5 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white font-extrabold text-xs rounded-xl shadow-md"
+                    >
+                      SCOUT SELECTED PLAYER AT 20 CREDITS
+                    </button>
+                  )}
                 </form>
               </div>
             )}
 
             {/* Uniform Bucket Minimum Relaxation (§13) */}
-            <div className="glass-panel rounded-3xl p-5 border border-amber-500/30 space-y-3 shadow-xl">
+            {adminRole === 'Super Admin' && <div className="glass-panel rounded-3xl p-5 border border-amber-500/30 space-y-3 shadow-xl">
               <h4 className="text-sm font-extrabold text-amber-300 flex items-center space-x-2">
                 <Sliders className="w-4 h-4 text-amber-400" />
                 <span>Uniform Bucket Minimum Relaxation (§13)</span>
@@ -550,7 +713,7 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
                   RELAX MINIMUM UNIFORMLY
                 </button>
               </form>
-            </div>
+            </div>}
           </div>
         </div>
       )}
@@ -568,18 +731,26 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
                   <th className="p-3">Mobile (Private)</th>
                   <th className="p-3">CricHeroes Phone</th>
                   <th className="p-3">Bucket</th>
+                  <th className="p-3">Year Review</th>
                   <th className="p-3">Profile Status</th>
                   <th className="p-3">Payment</th>
                   <th className="p-3">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-800/60 bg-gray-950/40">
-                {adminPlayers.map((p) => (
+                {[...adminPlayers].sort((left, right) => Number(right.year_discrepancy_reported) - Number(left.year_discrepancy_reported)).map((p) => (
                   <tr key={p.id} className="hover:bg-gray-800/40 transition">
                     <td className="p-3 font-bold text-white">{p.name} ({p.roll_number})</td>
                     <td className="p-3 text-amber-400 font-mono">{p.mobile_number}</td>
                     <td className="p-3 text-indigo-300 font-mono">{p.cricheroes_mobile || 'N/A'}</td>
                     <td className="p-3 font-bold text-blue-400">{p.bucket}</td>
+                    <td className="p-3">
+                      {p.year_discrepancy_reported ? (
+                        <span className="rounded border border-amber-700 bg-amber-950 px-2 py-1 text-[10px] font-bold text-amber-300">REVIEW REQUIRED</span>
+                      ) : p.year_override ? (
+                        <span className="text-emerald-400">Year set to {p.year_override}</span>
+                      ) : <span className="text-gray-500">No report</span>}
+                    </td>
                     <td className="p-3">
                       <span
                         className={`px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -644,6 +815,18 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
                           RESOLVE PROFILE
                         </button>
                       ) : <span className="text-gray-500">Complete</span>}
+                      {p.referring_team_name && p.referring_team_name.toLowerCase() !== 'no' && !p.referred_franchise_id && (
+                        (() => {
+                          const matchingFranchise = franchises.find((franchise) => franchise.name.trim().toLowerCase() === p.referring_team_name?.trim().toLowerCase());
+                          return adminRole !== 'Super Admin' ? (
+                            <p className="mt-2 text-[10px] text-amber-300">Referral awaiting Super Admin verification: {p.referring_team_name}</p>
+                          ) : matchingFranchise ? (
+                            <button type="button" onClick={() => handleAssignReferral(p, matchingFranchise)} className="mt-2 w-full px-2 py-1.5 bg-amber-700 hover:bg-amber-600 text-white rounded text-[10px] font-bold">VERIFY &amp; ASSIGN {matchingFranchise.short_code}</button>
+                          ) : (
+                            <p className="mt-2 text-[10px] text-red-300">Referral conflict: declared team “{p.referring_team_name}” does not match a franchise.</p>
+                          );
+                        })()
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -760,20 +943,120 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {franchises.map((f) => (
-              <div key={f.id} className="glass-card rounded-2xl p-4 border border-gray-800 space-y-2 text-xs">
-                <div className="flex items-center space-x-3">
-                  <img src={f.logo_url || `https://api.dicebear.com/7.x/identicon/svg?seed=${f.short_code}`} alt={f.name} className="w-10 h-10 rounded-xl bg-gray-900 object-contain p-1 border border-gray-700" />
-                  <div>
-                    <h4 className="font-bold text-white text-sm">{f.name}</h4>
-                    <p className="text-gray-400">Code: <strong className="text-indigo-400">{f.short_code}</strong></p>
-                  </div>
-                </div>
-                <div className="pt-2 border-t border-gray-800 space-y-1">
-                  <p className="text-gray-300">Coordinator: <strong className="text-white">{f.faculty_coordinator_name}</strong> ({f.faculty_coordinator_dept})</p>
-                  <p className="text-amber-400 font-mono">Coordinator Mobile: {f.faculty_coordinator_mobile}</p>
-                  {f.captain_name && <p className="text-emerald-400">Captain: <strong className="text-white">{f.captain_name}</strong> {f.captain_mobile && `(${f.captain_mobile})`}</p>}
-                  {f.vice_captain_name && <p className="text-purple-400">Vice Captain: <strong className="text-white">{f.vice_captain_name}</strong> {f.vice_captain_mobile && `(${f.vice_captain_mobile})`}</p>}
-                </div>
+              <div key={f.id} className="glass-card rounded-2xl p-4 border border-gray-800 space-y-3 text-xs relative shadow-md">
+                {editingFranchiseId === f.id ? (
+                  <form onSubmit={handleUpdateFranchiseSubmit} className="space-y-3">
+                    <div className="flex items-center justify-between border-b border-gray-800 pb-2">
+                      <h4 className="font-extrabold text-indigo-400">Edit Franchise Details</h4>
+                      <button type="button" onClick={() => setEditingFranchiseId(null)} className="text-gray-400 hover:text-white p-1">
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-gray-400 block mb-0.5">Team Name</label>
+                      <input type="text" required value={editFranchiseName} onChange={(e) => setEditFranchiseName(e.target.value)} className="w-full glass-input rounded-lg p-1.5 text-xs" />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-gray-400 block mb-0.5">Short Code</label>
+                        <input type="text" required maxLength={4} value={editFranchiseCode} onChange={(e) => setEditFranchiseCode(e.target.value.toUpperCase())} className="w-full glass-input rounded-lg p-1.5 text-xs uppercase" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-gray-400 block mb-0.5">Dept</label>
+                        <input type="text" required value={editFacultyDept} onChange={(e) => setEditFacultyDept(e.target.value)} className="w-full glass-input rounded-lg p-1.5 text-xs" />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-gray-400 block mb-0.5">Logo URL</label>
+                      <input type="url" value={editFranchiseLogo} onChange={(e) => setEditFranchiseLogo(e.target.value)} className="w-full glass-input rounded-lg p-1.5 text-xs" />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-gray-400 block mb-0.5">Faculty Coordinator</label>
+                      <input type="text" required value={editFacultyName} onChange={(e) => setEditFacultyName(e.target.value)} className="w-full glass-input rounded-lg p-1.5 text-xs" />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-gray-400 block mb-0.5">Faculty Mobile</label>
+                      <input type="tel" required value={editFacultyMobile} onChange={(e) => setEditFacultyMobile(e.target.value)} className="w-full glass-input rounded-lg p-1.5 text-xs" />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-gray-400 block mb-0.5">Captain Name</label>
+                        <input type="text" value={editCaptainName} onChange={(e) => setEditCaptainName(e.target.value)} className="w-full glass-input rounded-lg p-1.5 text-xs" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-gray-400 block mb-0.5">Captain Mobile</label>
+                        <input type="tel" value={editCaptainMobile} onChange={(e) => setEditCaptainMobile(e.target.value)} className="w-full glass-input rounded-lg p-1.5 text-xs" />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-gray-400 block mb-0.5">Vice-Captain Name</label>
+                        <input type="text" value={editViceCaptainName} onChange={(e) => setEditViceCaptainName(e.target.value)} className="w-full glass-input rounded-lg p-1.5 text-xs" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-gray-400 block mb-0.5">Vice-Captain Mobile</label>
+                        <input type="tel" value={editViceCaptainMobile} onChange={(e) => setEditViceCaptainMobile(e.target.value)} className="w-full glass-input rounded-lg p-1.5 text-xs" />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button type="submit" className="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold shadow">
+                        SAVE CHANGES
+                      </button>
+                      <button type="button" onClick={() => setEditingFranchiseId(null)} className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-xs font-bold">
+                        CANCEL
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-3">
+                        <img src={f.logo_url || `https://api.dicebear.com/7.x/identicon/svg?seed=${f.short_code}`} alt={f.name} className="w-10 h-10 rounded-xl bg-gray-900 object-contain p-1 border border-gray-700" />
+                        <div>
+                          <h4 className="font-bold text-white text-sm">{f.name}</h4>
+                          <p className="text-gray-400">Code: <strong className="text-indigo-400">{f.short_code}</strong></p>
+                        </div>
+                      </div>
+
+                      {adminRole !== 'Operator' && (
+                        <div className="flex items-center space-x-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleStartEditFranchise(f)}
+                            title="Edit Franchise"
+                            className="p-1.5 bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 rounded-lg border border-indigo-700/50 transition"
+                          >
+                            <Edit className="w-3.5 h-3.5" />
+                          </button>
+                          {adminRole === 'Super Admin' && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteFranchise(f.id, f.name)}
+                              title="Delete Franchise"
+                              className="p-1.5 bg-red-950/80 hover:bg-red-900 text-red-300 rounded-lg border border-red-700/50 transition"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="pt-2 border-t border-gray-800 space-y-1">
+                      <p className="text-gray-300">Coordinator: <strong className="text-white">{f.faculty_coordinator_name}</strong> ({f.faculty_coordinator_dept})</p>
+                      <p className="text-amber-400 font-mono">Coordinator Mobile: {f.faculty_coordinator_mobile}</p>
+                      {f.captain_name && <p className="text-emerald-400">Captain: <strong className="text-white">{f.captain_name}</strong> {f.captain_mobile && `(${f.captain_mobile})`}</p>}
+                      {f.vice_captain_name && <p className="text-purple-400">Vice Captain: <strong className="text-white">{f.vice_captain_name}</strong> {f.vice_captain_mobile && `(${f.vice_captain_mobile})`}</p>}
+                    </div>
+                  </>
+                )}
               </div>
             ))}
           </div>

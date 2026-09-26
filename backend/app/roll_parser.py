@@ -1,8 +1,8 @@
 import re
+from datetime import date
 from typing import Dict, Any, Optional
 
-CURRENT_ACADEMIC_YEAR = 2026
-
+CURRENT_ACADEMIC_YEAR = date.today().year if date.today().month >= 7 else date.today().year - 1
 # Branch mappings
 BTECH_BRANCHES = {
     "02": ("EEE", "Electrical & Electronics Engineering"),
@@ -87,18 +87,36 @@ def parse_roll_number(roll_number: str, current_year: int = CURRENT_ACADEMIC_YEA
             "formatted_summary": f"Diploma, {branch_name}, {ordinal(year_of_study)} year -> bucket {bucket}"
         }
 
-    # 3. Postgraduate / Custom pattern fallback
+    if clean_roll.startswith("PG"):
+        return {
+            "valid": False,
+            "course": "PG",
+            "program": "PG",
+            "branch": "Various",
+            "year_of_study": 1,
+            "entry_type": "regular",
+            "bucket": "PG",
+            "admission_year": current_year,
+            "show_acc_reference": True,
+            "formatted_summary": "PG Player (No squad requirement)"
+        }
+
+    return invalid_roll("Roll number does not match a supported B.Tech, diploma, or PG format.", current_year)
+
+
+def invalid_roll(error: str, current_year: int) -> Dict[str, Any]:
     return {
         "valid": False,
-        "course": "PG",
-        "program": "PG",
-        "branch": "Various",
-        "year_of_study": 1,
+        "course": None,
+        "program": None,
+        "branch": None,
+        "year_of_study": None,
         "entry_type": "regular",
-        "bucket": "PG",
-        "admission_year": current_year,
-        "show_acc_reference": True,
-        "formatted_summary": "PG Player (No squad requirement)"
+        "bucket": None,
+        "admission_year": None,
+        "current_academic_year": current_year,
+        "show_acc_reference": False,
+        "formatted_summary": error,
     }
 
 def ordinal(n: int) -> str:

@@ -1,6 +1,6 @@
 import React from 'react';
 import type { Franchise, Player, AuctionState } from '../types';
-import { X, BarChart3, Shield } from 'lucide-react';
+import { X, BarChart3 } from 'lucide-react';
 
 interface SquadAnalysisModalProps {
   isOpen: boolean;

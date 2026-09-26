@@ -63,7 +63,7 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchInitialData();
+    const initialLoad = window.setTimeout(() => { void fetchInitialData(); }, 0);
 
     // Connect to WebSocket for real-time live updates
     const unsubscribe = auctionWs.subscribe((msg) => {
@@ -83,6 +83,7 @@ export const App: React.FC = () => {
     auctionWs.connect();
 
     return () => {
+      window.clearTimeout(initialLoad);
       unsubscribe();
       auctionWs.disconnect();
     };

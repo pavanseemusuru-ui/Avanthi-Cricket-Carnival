@@ -122,8 +122,16 @@ def generate_sample_players():
             "best_bowling": f"{random.randint(3, 5)}/{random.randint(12, 35)}" if is_bowler else "0/0",
             "catches": random.randint(2, 30),
             "stumpings": random.randint(1, 15) if is_wk else 0,
-            "random_lot_number": idx + 1
+            "random_lot_number": None
         })
+
+    for bucket in {player["bucket"] for player in players}:
+        bucket_players = [player for player in players if player["bucket"] == bucket]
+        lot_numbers = list(range(1, len(bucket_players) + 1))
+        random.shuffle(lot_numbers)
+        for player, lot_number in zip(bucket_players, lot_numbers):
+            player["random_lot_number"] = lot_number
+
     return players
 
 def seed_database():
@@ -131,87 +139,91 @@ def seed_database():
     db = SessionLocal()
     
     try:
-        # Check if already seeded
-        if db.query(Franchise).count() > 0:
-            print("Database already contains franchises. Skipping seed.")
-            return
+        # 1. Seed 11 Franchises if missing
+        if db.query(Franchise).count() == 0:
+            print("Seeding 11 Franchises...")
+            for f_data in FRANCHISES_DATA:
+                f = Franchise(**f_data)
+                db.add(f)
+            db.commit()
 
-        print("Seeding 11 Franchises...")
-        franchises = []
-        for f_data in FRANCHISES_DATA:
-            f = Franchise(**f_data)
-            db.add(f)
-            franchises.append(f)
-        db.commit()
+        franchises = db.query(Franchise).order_by(Franchise.id).all()
 
-        # Refresh to get IDs
-        for f in franchises:
-            db.refresh(f)
+        # 2. Seed Players if missing or incomplete
+        if db.query(Player).count() < 20:
+            print("Seeding Players...")
+            player_datas = generate_sample_players()
+            for p_data in player_datas:
+                if not db.query(Player).filter(Player.roll_number == p_data["roll_number"]).first():
+                    p = Player(**p_data)
+                    db.add(p)
+            db.commit()
 
-        print("Seeding Players...")
-        player_datas = generate_sample_players()
-        players = []
-        for p_data in player_datas:
-            p = Player(**p_data)
-            db.add(p)
-            players.append(p)
-        db.commit()
+            # Refresh and assign Captain & Vice-Captain retained players for each franchise
+            all_players = db.query(Player).order_by(Player.id).all()
+            print("Assigning Captains and Vice-Captains...")
+            for idx, f in enumerate(franchises):
+                if len(all_players) > idx * 2 + 1:
+                    cap_player = all_players[idx * 2]
+                    vc_player = all_players[idx * 2 + 1]
 
-        # Refresh players
-        for p in players:
-            db.refresh(p)
+                    if not cap_player.retained_franchise_id:
+                        cap_player.retained_franchise_id = f.id
+                        cap_player.retained_role = "captain"
+                        cap_player.sold_type = "retained"
+                        cap_player.sold_price = 0
 
-        # Assign Captain & Vice-Captain retained players for each franchise (cost 0)
-        print("Assigning Captains and Vice-Captains...")
-        for idx, f in enumerate(franchises):
-            cap_player = players[idx * 2]
-            vc_player = players[idx * 2 + 1]
+                    if not vc_player.retained_franchise_id:
+                        vc_player.retained_franchise_id = f.id
+                        vc_player.retained_role = "vice_captain"
+                        vc_player.sold_type = "retained"
+                        vc_player.sold_price = 0
 
-            cap_player.retained_franchise_id = f.id
-            cap_player.retained_role = "captain"
-            cap_player.sold_type = "retained"
-            cap_player.sold_price = 0
+                    f.captain_mobile = cap_player.mobile_number
 
-            vc_player.retained_franchise_id = f.id
-            vc_player.retained_role = "vice_captain"
-            vc_player.sold_type = "retained"
-            vc_player.sold_price = 0
+            db.commit()
 
-            f.captain_mobile = cap_player.mobile_number
+        # 3. Create initial AuctionState singleton if missing
+        state = db.query(AuctionState).filter(AuctionState.id == 1).first()
+        if not state:
+            print("Initializing Auction State...")
+            # Get first eligible unassigned player
+            first_player = db.query(Player).filter(
+                Player.bucket == "B3",
+                Player.sold_franchise_id.is_(None),
+                Player.retained_franchise_id.is_(None),
+                Player.referred_franchise_id.is_(None)
+            ).first() or db.query(Player).filter(
+                Player.sold_franchise_id.is_(None),
+                Player.retained_franchise_id.is_(None),
+                Player.referred_franchise_id.is_(None)
+            ).first()
+            
+            state = AuctionState(
+                id=1,
+                current_bucket=first_player.bucket if first_player else "B3",
+                current_player_id=first_player.id if first_player else None,
+                current_bid_price=0,
+                current_bidder_id=None,
+                timer_seconds=30,
+                timer_duration_seconds=30,
+                timer_running=False,
+                draw_mode="auto",
+                passed_franchise_ids="[]",
+                bucket_minimums_json='{"B1":2,"B2":2,"B3":2,"B4":2,"B5":2}',
+                is_paused=False,
+                round_number=1
+            )
+            db.add(state)
 
-        db.commit()
-
-        # Create initial AuctionState singleton
-        print("Initializing Auction State...")
-        # Get first B3 player for initial lot
-        first_b3 = db.query(Player).filter(Player.bucket == "B3", Player.sold_franchise_id.is_(None), Player.retained_franchise_id.is_(None)).first()
-        
-        state = AuctionState(
-            id=1,
-            current_bucket="B3",
-            current_player_id=first_b3.id if first_b3 else None,
-            current_bid_price=first_b3.base_price if first_b3 else 0,
-            current_bidder_id=None,
-            timer_seconds=30,
-            timer_running=False,
-            draw_mode="auto",
-            passed_franchise_ids="[]",
-            bucket_minimums_json='{"B1":2,"B2":2,"B3":2,"B4":2,"B5":2}',
-            is_paused=False,
-            round_number=1
-        )
-        db.add(state)
-
-        # Add initial AuditLog entry
-        log = AuditLog(
-            action_type="SYSTEM_INIT",
-            performed_by="Super Admin",
-            reason="Tournament initialized with 11 franchises and seed players."
-        )
-        db.add(log)
-
-        db.commit()
-        print("Database seeding completed successfully!")
+            log = AuditLog(
+                action_type="SYSTEM_INIT",
+                performed_by="Super Admin",
+                reason="Tournament initialized with 11 franchises and seed players."
+            )
+            db.add(log)
+            db.commit()
+            print("Database seeding completed successfully!")
     finally:
         db.close()
 

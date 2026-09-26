@@ -88,11 +88,23 @@ async def enforce_api_permissions(request: Request, call_next):
     role = claims["role"]
     admin_roles = {"Admin", "Super Admin"}
     captain_roles = admin_roles | {"Captain"}
+    operator_auction_posts = {
+        "/api/auction/hammer",
+        "/api/auction/skip",
+        "/api/auction/draw-next",
+        "/api/auction/set-bucket",
+        "/api/auction/select-player",
+        "/api/auction/timer-config",
+        "/api/auction/draw-mode",
+        "/api/auction/bid",
+    }
     allowed = False
     if method == "GET":
         allowed = role in admin_roles | {"Operator"} and path in {
             "/api/players/admin", "/api/franchises/admin", "/api/audit-log", "/api/export/excel"}
         allowed = allowed or (role == "Captain" and path == "/api/captain/dashboard")
+    elif role == "Operator" and path in operator_auction_posts:
+        allowed = True
     elif path in {"/api/auction/bid", "/api/auction/pass", "/api/auction/unpass"}:
         allowed = role in captain_roles
     else:
@@ -101,6 +113,8 @@ async def enforce_api_permissions(request: Request, call_next):
         allowed = role in admin_roles
     if role == "Admin" and method == "PUT" and path.endswith("/override-year"):
         allowed = False
+    if path in {"/api/auction/undo", "/api/auction/direct-assign", "/api/auction/relax-minimum", "/api/auction/auto-allot", "/api/auction/scout", "/api/franchises/refer-player"}:
+        allowed = role == "Super Admin"
     if not allowed:
         return JSONResponse(status_code=403, content={"detail": "Your account role cannot perform this action."})
     request.state.user = claims

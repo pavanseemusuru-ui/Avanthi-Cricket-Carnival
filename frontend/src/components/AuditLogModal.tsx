@@ -1,6 +1,6 @@
 import React from 'react';
 import type { AuditLog, Franchise, Player } from '../types';
-import { X, History, RotateCcw, AlertTriangle } from 'lucide-react';
+import { X, History, RotateCcw } from 'lucide-react';
 
 interface AuditLogModalProps {
   isOpen: boolean;
@@ -83,7 +83,7 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
                       )}
                     </td>
                     <td className="p-3">
-                      {!log.is_undone && ['HAMMER_SOLD', 'DIRECT_ASSIGN', 'ALLOT'].includes(log.action_type) && (
+                      {!log.is_undone && ['HAMMER_SOLD', 'DIRECT_ASSIGN', 'ALLOT', 'SCOUT'].includes(log.action_type) && (
                         <button
                           onClick={() => {
                             const reason = prompt(`Enter reason for undoing Audit #${log.id}:`);

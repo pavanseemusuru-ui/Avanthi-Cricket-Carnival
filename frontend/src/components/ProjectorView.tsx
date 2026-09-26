@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import type { AuctionState, Franchise } from '../types';
 import { Flame, Clock, Award, Shield, AlertTriangle } from 'lucide-react';
 
@@ -13,14 +13,7 @@ export const ProjectorView: React.FC<ProjectorViewProps> = ({ auctionState, fran
   const scarcityWarnings = auctionState?.scarcity_warnings || {};
   const activeWarnings = Object.values(scarcityWarnings).filter((w) => w.warning_active);
 
-  // High contrast timer state
-  const [timer, setTimer] = useState(auctionState?.timer_seconds || 30);
-
-  useEffect(() => {
-    if (auctionState?.timer_seconds !== undefined) {
-      setTimer(auctionState.timer_seconds);
-    }
-  }, [auctionState?.timer_seconds]);
+  const timer = auctionState?.timer_seconds ?? 30;
 
   return (
     <div className="min-h-screen bg-black text-white p-6 flex flex-col justify-between select-none">
@@ -130,20 +123,26 @@ export const ProjectorView: React.FC<ProjectorViewProps> = ({ auctionState, fran
 
               {/* Countdown Timer Box */}
               <div
-                className={`p-6 rounded-3xl border flex flex-col items-center justify-center shadow-2xl ${
+                className={`p-6 rounded-3xl border flex flex-col items-center justify-center shadow-2xl transition-all duration-300 ${
                   timer <= 5
-                    ? 'bg-red-950/90 border-red-500 animate-pulse-warning'
-                    : 'bg-gradient-to-br from-gray-900 to-gray-950 border-gray-800'
+                    ? 'bg-red-950/95 border-red-500 animate-pulse-warning shadow-[0_0_50px_rgba(239,68,68,0.5)]'
+                    : timer <= 10
+                    ? 'bg-amber-950/40 border-amber-500/60 shadow-[0_0_30px_rgba(245,158,11,0.3)]'
+                    : 'bg-gradient-to-br from-gray-900 to-gray-950 border-gray-800 shadow-[0_0_20px_rgba(0,0,0,0.8)]'
                 }`}
               >
-                <div className="flex items-center space-x-2 text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">
-                  <Clock className="w-4 h-4 text-indigo-400" />
-                  <span>Countdown Timer</span>
+                <div className="flex items-center space-x-2 text-xs font-black text-pink-400 uppercase tracking-widest mb-1">
+                  <Clock className="w-5 h-5 text-pink-400 animate-spin-slow" />
+                  <span>Auction Timer</span>
                 </div>
-                <span className={`text-6xl font-black tracking-tighter ${timer <= 5 ? 'text-red-400' : 'text-white'}`}>
-                  {timer}s
+                <span className={`text-7xl md:text-8xl font-black font-mono tracking-tighter ${
+                  timer <= 5 ? 'text-red-400 drop-shadow-[0_0_25px_rgba(248,113,113,1)]' : timer <= 10 ? 'text-amber-300 drop-shadow-[0_0_15px_rgba(253,224,71,0.8)]' : 'text-emerald-400 drop-shadow-[0_0_15px_rgba(52,211,153,0.8)]'
+                }`}>
+                  {String(timer).padStart(2, '0')}s
                 </span>
-                <p className="text-[10px] text-gray-500 font-semibold mt-1">Resets to 20s after each tap</p>
+                <p className="text-xs text-gray-400 font-bold uppercase tracking-wider mt-2">
+                  {auctionState?.is_paused ? 'PAUSED' : auctionState?.timer_running ? 'COUNTDOWN RUNNING' : 'AWAITING OPENING BID'}
+                </p>
               </div>
             </div>
 
@@ -193,7 +192,7 @@ export const ProjectorView: React.FC<ProjectorViewProps> = ({ auctionState, fran
         <div className="grid grid-cols-11 gap-2">
           {franchises.map((f) => {
             const isCurrentBidder = currentBidder?.id === f.id;
-            const isPassed = auctionState?.passed_franchise_ids.includes(f.id);
+            const isPassed = Boolean(auctionState?.passed_franchise_ids?.includes(f.id));
             const isBlocked = f.is_blocked;
 
             return (
