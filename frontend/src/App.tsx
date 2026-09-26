@@ -181,7 +181,7 @@ export const App: React.FC = () => {
   const isProjectorView = currentView === 'projector';
 
   return (
-    <div className="min-h-screen bg-[#0b0f19] text-gray-100 selection:bg-indigo-500 selection:text-white flex flex-col md:flex-row">
+    <div className="min-h-screen bg-[#070709] text-gray-100 selection:bg-lime-500 selection:text-black flex flex-col md:flex-row">
       {/* Sidebar — full width normally, icon-only strip in projector view */}
       <Sidebar
         currentView={currentView}
