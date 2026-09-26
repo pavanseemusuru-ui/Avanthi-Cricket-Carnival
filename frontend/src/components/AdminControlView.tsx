@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import type { AuctionState, Franchise, AdminPlayer, AdminFranchise, AuditLog } from '../types';
+import React, { useEffect, useState } from 'react';
+import type { AuctionState, AdminPlayer, AdminFranchise, AuthRole } from '../types';
 import { api } from '../services/api';
 import { ShieldCheck, Gavel, SkipForward, RotateCcw, Sliders, UserCheck, AlertCircle } from 'lucide-react';
 
@@ -7,24 +7,25 @@ interface AdminControlViewProps {
   auctionState: AuctionState | null;
   franchises: AdminFranchise[];
   adminPlayers: AdminPlayer[];
-  auditLogs: AuditLog[];
-  adminRole: 'Super Admin' | 'Operator' | null;
+  adminRole: AuthRole | null;
   onLogout: () => void;
   onRefreshState: () => void;
-  onOpenAuditLog: () => void;
 }
 
 export const AdminControlView: React.FC<AdminControlViewProps> = ({
   auctionState,
   franchises,
   adminPlayers,
-  auditLogs,
   adminRole,
   onLogout,
   onRefreshState,
-  onOpenAuditLog,
 }) => {
-  const [activeTab, setActiveTab] = useState<'auction' | 'players' | 'franchises' | 'override'>('auction');
+  const [activeTab, setActiveTab] = useState<'auction' | 'players' | 'franchises' | 'override'>(() => adminRole === 'Operator' ? 'players' : 'auction');
+  const visibleTabs: Array<'auction' | 'players' | 'franchises' | 'override'> = adminRole === 'Operator'
+    ? ['players', 'franchises']
+    : adminRole === 'Admin'
+      ? ['auction', 'players', 'franchises']
+      : ['auction', 'players', 'franchises', 'override'];
 
   // Direct Assign State
   const [directPlayerId, setDirectPlayerId] = useState<number>(adminPlayers[0]?.id || 1);
@@ -64,6 +65,15 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
   const [showAddFranchiseForm, setShowAddFranchiseForm] = useState(false);
 
   const [adminMsg, setAdminMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  useEffect(() => {
+    if (adminPlayers.length && !adminPlayers.some((player) => player.id === directPlayerId)) {
+      setDirectPlayerId(adminPlayers[0].id);
+    }
+    if (franchises.length && !franchises.some((franchise) => franchise.id === directFranchiseId)) {
+      setDirectFranchiseId(franchises[0].id);
+    }
+  }, [adminPlayers, franchises, directPlayerId, directFranchiseId]);
 
   const activePlayer = auctionState?.current_player;
   const currentBidder = auctionState?.current_bidder;
@@ -234,7 +244,7 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
         <div className="flex items-center space-x-3">
           {/* Tab Navigation */}
           <div className="flex flex-wrap items-center gap-2 bg-gray-900/80 p-1.5 rounded-2xl border border-gray-800">
-            {(['auction', 'players', 'franchises', 'override'] as const).map((tab) => (
+            {visibleTabs.map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -437,6 +447,63 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
               </form>
             </div>
 
+            {adminRole !== 'Operator' && (
+              <div className="glass-panel rounded-3xl p-5 border border-emerald-500/30 space-y-3 shadow-xl">
+                <h4 className="text-sm font-extrabold text-emerald-300 flex items-center space-x-2">
+                  <UserCheck className="w-4 h-4 text-emerald-400" />
+                  <span>Direct Player Assignment</span>
+                </h4>
+                <form onSubmit={handleDirectAssign} className="space-y-3">
+                  <select
+                    value={directPlayerId}
+                    onChange={(event) => setDirectPlayerId(Number(event.target.value))}
+                    className="w-full glass-input rounded-xl px-3 py-2 text-xs bg-gray-900 text-white"
+                    required
+                    disabled={!adminPlayers.length}
+                  >
+                    {adminPlayers.map((player) => (
+                      <option key={player.id} value={player.id}>{player.name} ({player.roll_number})</option>
+                    ))}
+                  </select>
+                  <select
+                    value={directFranchiseId}
+                    onChange={(event) => setDirectFranchiseId(Number(event.target.value))}
+                    className="w-full glass-input rounded-xl px-3 py-2 text-xs bg-gray-900 text-white"
+                    required
+                    disabled={!franchises.length}
+                  >
+                    {franchises.map((franchise) => (
+                      <option key={franchise.id} value={franchise.id}>{franchise.name}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    min="0"
+                    value={directPrice}
+                    onChange={(event) => setDirectPrice(Number(event.target.value))}
+                    className="w-full glass-input rounded-xl px-3 py-2 text-xs"
+                    aria-label="Assignment price"
+                    required
+                  />
+                  <input
+                    type="text"
+                    value={directReason}
+                    onChange={(event) => setDirectReason(event.target.value)}
+                    className="w-full glass-input rounded-xl px-3 py-2 text-xs"
+                    placeholder="Reason for assignment"
+                    required
+                  />
+                  <button
+                    type="submit"
+                    disabled={!adminPlayers.length || !franchises.length}
+                    className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white font-extrabold text-xs rounded-xl shadow-md"
+                  >
+                    ASSIGN PLAYER
+                  </button>
+                </form>
+              </div>
+            )}
+
             {/* Uniform Bucket Minimum Relaxation (§13) */}
             <div className="glass-panel rounded-3xl p-5 border border-amber-500/30 space-y-3 shadow-xl">
               <h4 className="text-sm font-extrabold text-amber-300 flex items-center space-x-2">
@@ -525,18 +592,59 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
                       </span>
                     </td>
                     <td className="p-3">
-                      <button
-                        onClick={() => handleTogglePayment(p.id, p.payment_status === 'paid')}
-                        className={`px-2.5 py-1 rounded text-[10px] font-bold border transition ${
-                          p.payment_status === 'paid'
-                            ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
-                            : 'bg-gray-800 text-gray-400 border-gray-700 hover:text-white'
-                        }`}
-                      >
-                        {p.payment_status === 'paid' ? 'PAID (AUCTIONABLE)' : 'MARK PAID'}
-                      </button>
+                      {adminRole === 'Operator' ? (
+                        <span>{p.payment_status === 'paid' ? 'PAID' : 'UNPAID'}</span>
+                      ) : (
+                        <button
+                          onClick={() => handleTogglePayment(p.id, p.payment_status === 'paid')}
+                          className={`px-2.5 py-1 rounded text-[10px] font-bold border transition ${
+                            p.payment_status === 'paid'
+                              ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
+                              : 'bg-gray-800 text-gray-400 border-gray-700 hover:text-white'
+                          }`}
+                        >
+                          {p.payment_status === 'paid' ? 'PAID (AUCTIONABLE)' : 'MARK PAID'}
+                        </button>
+                      )}
                     </td>
-                    <td className="p-3 text-gray-400">—</td>
+                    <td className="p-3 min-w-64">
+                      {p.profile_status === 'profile_creation_pending' && resolvePlayerId === p.id ? (
+                        <form onSubmit={handleResolveProfile} className="space-y-2">
+                          <input
+                            type="url"
+                            value={resolveUrl}
+                            onChange={(event) => setResolveUrl(event.target.value)}
+                            placeholder="CricHeroes profile URL"
+                            className="w-full glass-input rounded-lg px-2 py-1.5 text-[10px]"
+                            required
+                          />
+                          <input
+                            type="tel"
+                            value={resolvePhone}
+                            onChange={(event) => setResolvePhone(event.target.value)}
+                            placeholder="CricHeroes phone"
+                            className="w-full glass-input rounded-lg px-2 py-1.5 text-[10px]"
+                            required
+                          />
+                          <div className="flex gap-2">
+                            <button type="submit" className="px-2 py-1 bg-emerald-700 text-white rounded text-[10px] font-bold">SAVE</button>
+                            <button type="button" onClick={() => setResolvePlayerId(null)} className="px-2 py-1 bg-gray-800 text-gray-300 rounded text-[10px] font-bold">CANCEL</button>
+                          </div>
+                        </form>
+                      ) : p.profile_status === 'profile_creation_pending' ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setResolvePlayerId(p.id);
+                            setResolveUrl(p.cricheroes_url || '');
+                            setResolvePhone(p.cricheroes_mobile || '');
+                          }}
+                          className="px-2.5 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-white rounded text-[10px] font-bold"
+                        >
+                          RESOLVE PROFILE
+                        </button>
+                      ) : <span className="text-gray-500">Complete</span>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -553,16 +661,18 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
               <h3 className="text-lg font-bold text-white">Franchise Management</h3>
               <p className="text-xs text-gray-400">Total Teams: {franchises.length} &bull; Admin &amp; Operator Access Only</p>
             </div>
-            <button
-              onClick={() => setShowAddFranchiseForm(!showAddFranchiseForm)}
-              className="px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-pink-600 hover:from-indigo-500 hover:to-pink-500 text-white font-extrabold text-xs rounded-xl shadow-lg transition"
-            >
-              {showAddFranchiseForm ? 'Cancel' : '+ Create New Franchise'}
-            </button>
+            {adminRole !== 'Operator' && (
+              <button
+                onClick={() => setShowAddFranchiseForm(!showAddFranchiseForm)}
+                className="px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-pink-600 hover:from-indigo-500 hover:to-pink-500 text-white font-extrabold text-xs rounded-xl shadow-lg transition"
+              >
+                {showAddFranchiseForm ? 'Cancel' : '+ Create New Franchise'}
+              </button>
+            )}
           </div>
 
           {/* Franchise Creation Form */}
-          {showAddFranchiseForm && (
+          {showAddFranchiseForm && adminRole !== 'Operator' && (
             <form onSubmit={handleRegisterFranchise} className="bg-gray-900/90 border border-indigo-500/40 p-5 rounded-2xl space-y-4 shadow-xl">
               <h4 className="text-sm font-black text-white text-indigo-400">Add New Team / Franchise</h4>
               

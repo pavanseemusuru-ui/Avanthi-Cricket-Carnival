@@ -4,8 +4,13 @@ Write-Host "Starting Backend and Frontend servers..." -ForegroundColor Green
 $backendPath = Join-Path $PSScriptRoot "backend"
 $frontendPath = Join-Path $PSScriptRoot "frontend"
 
-Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -NoExit -Command Set-Location '$backendPath'; .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8005"
-Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -NoExit -Command Set-Location '$frontendPath'; npm run dev"
+Start-Process -FilePath powershell.exe -WorkingDirectory $backendPath -ArgumentList @(
+	'-ExecutionPolicy', 'Bypass', '-NoExit', '-File', '.\run-dev.ps1'
+)
+Start-Process -FilePath powershell.exe -WorkingDirectory $frontendPath -ArgumentList @(
+	'-NoExit', '-Command', 'npm run dev'
+)
 
-Write-Host "Backend: http://127.0.0.1:8005" -ForegroundColor Cyan
+Write-Host "Backend: http://localhost:8005" -ForegroundColor Cyan
 Write-Host "Frontend: http://localhost:3000" -ForegroundColor Cyan
+Write-Host "For other devices on your network, use this PC's IP address and allow ports 3000 and 8005 through Windows Firewall." -ForegroundColor Yellow

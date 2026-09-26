@@ -7,7 +7,7 @@ import logging
 import os
 import re
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
@@ -16,9 +16,9 @@ from sqlalchemy.exc import IntegrityError
 import openpyxl
 from pydantic import BaseModel
 
-from app.database import Base, engine, get_db, SessionLocal
+from app.database import Base, engine, get_db, SessionLocal, DATABASE_URL
 from app.models import Franchise, Player, AuctionState, AuditLog
-from app import schemas, auction_engine, roll_parser
+from app import auth, schemas, auction_engine, roll_parser
 from app.websocket import manager
 
 timer_task = None
@@ -28,6 +28,11 @@ PHOTO_DATA_URL_PATTERN = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$
 
 class PhotoUploadRequest(BaseModel):
     photo_data: str
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 
 def validate_photo_data(photo_data: str) -> bytes:
@@ -53,6 +58,12 @@ app = FastAPI(
     version="1.0.0"
 )
 
+
+@app.middleware("http")
+async def authorization_middleware(request: Request, call_next):
+    return await auth.enforce_api_permissions(request, call_next)
+
+
 cors_origins_raw = os.getenv("CORS_ORIGINS", "*")
 if cors_origins_raw == "*":
     origins = ["*"]
@@ -67,42 +78,95 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def validate_production_configuration():
+    if os.getenv("APP_ENV", "development").lower() != "production":
+        return
+
+    auth_secret = os.getenv("AUCTION_AUTH_SECRET", "")
+    if len(auth_secret) < 32:
+        raise RuntimeError("AUCTION_AUTH_SECRET must contain at least 32 characters in production.")
+    if not DATABASE_URL.startswith("postgresql://"):
+        raise RuntimeError("Set DATABASE_URL to persistent PostgreSQL storage in production.")
+    if not origins or "*" in origins:
+        raise RuntimeError("Set CORS_ORIGINS to the deployed frontend origin in production.")
+
+    try:
+        configured_users = json.loads(os.getenv("AUCTION_AUTH_USERS", "[]"))
+    except json.JSONDecodeError as error:
+        raise RuntimeError("AUCTION_AUTH_USERS must be a valid JSON array in production.") from error
+    if not isinstance(configured_users, list) or not any(
+        isinstance(user, dict)
+        and user.get("username")
+        and user.get("password")
+        and user.get("role") in auth.ALLOWED_ROLES
+        for user in configured_users
+    ):
+        raise RuntimeError("Configure at least one valid account in AUCTION_AUTH_USERS for production.")
+
+
+@app.post("/api/auth/login")
+async def login(req: LoginRequest):
+    return auth.login(req.username, req.password)
+
+
+@app.get("/health")
+def health_check(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception as error:
+        logger.exception("Health check database query failed")
+        raise HTTPException(status_code=503, detail="Database unavailable") from error
+    return {"status": "ok"}
+
+
 @app.on_event("startup")
 async def startup_event():
     global timer_task
+    validate_production_configuration()
     # Create database schema first if tables do not exist
     Base.metadata.create_all(bind=engine)
 
-    # Auto-migrate missing columns safely for existing databases
-    with engine.connect() as conn:
-        for col_name, col_type in [
+    # Add legacy columns with types compatible with the configured database.
+    boolean_default = "BOOLEAN DEFAULT FALSE" if engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"
+    legacy_columns = {
+        "franchises": [
             ("captain_name", "VARCHAR"),
             ("vice_captain_name", "VARCHAR"),
-            ("vice_captain_mobile", "VARCHAR")
-        ]:
-            trans = conn.begin()
-            try:
-                conn.execute(text(f"ALTER TABLE franchises ADD COLUMN {col_name} {col_type}"))
-                trans.commit()
-            except Exception:
-                trans.rollback()
-
-        for col_name, col_type in [
+            ("vice_captain_mobile", "VARCHAR"),
+        ],
+        "auction_state": [
             ("timer_seconds", "INTEGER DEFAULT 30"),
             ("timer_duration_seconds", "INTEGER DEFAULT 30"),
-            ("timer_running", "INTEGER DEFAULT 0"),
+            ("timer_running", boolean_default),
             ("draw_mode", "VARCHAR DEFAULT 'auto'"),
             ("passed_franchise_ids", "VARCHAR DEFAULT '[]'"),
             ("bucket_minimums_json", "VARCHAR DEFAULT '{\"B1\":2,\"B2\":2,\"B3\":2,\"B4\":2,\"B5\":2}'"),
-            ("is_paused", "INTEGER DEFAULT 0"),
-            ("round_number", "INTEGER DEFAULT 1")
-        ]:
-            trans = conn.begin()
-            try:
-                conn.execute(text(f"ALTER TABLE auction_state ADD COLUMN {col_name} {col_type}"))
-                trans.commit()
-            except Exception:
-                trans.rollback()
+            ("is_paused", boolean_default),
+            ("round_number", "INTEGER DEFAULT 1"),
+        ],
+    }
+    boolean_columns = {"timer_running", "is_paused"}
+    with engine.begin() as conn:
+        for table_name, columns in legacy_columns.items():
+            existing_columns = {
+                column["name"]: column for column in inspect(conn).get_columns(table_name)
+            }
+            for column_name, column_type in columns:
+                existing_column = existing_columns.get(column_name)
+                if existing_column is None:
+                    conn.execute(text(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+                    ))
+                elif (
+                    engine.dialect.name == "postgresql"
+                    and column_name in boolean_columns
+                    and "INT" in str(existing_column["type"]).upper()
+                ):
+                    conn.execute(text(
+                        f"ALTER TABLE {table_name} ALTER COLUMN {column_name} "
+                        f"TYPE BOOLEAN USING {column_name} <> 0"
+                    ))
 
     from app.seed import seed_database
     seed_database()
@@ -579,7 +643,11 @@ def get_auction_state(db: Session = Depends(get_db)):
     return get_auction_state_data(db)
 
 @app.post("/api/auction/bid")
-async def place_bid(req: schemas.BidRequest, db: Session = Depends(get_db)):
+async def place_bid(req: schemas.BidRequest, request: Request, db: Session = Depends(get_db)):
+    claims = getattr(request.state, "user", {})
+    if claims.get("role") == "Captain" and str(claims.get("franchise_id")) != str(req.franchise_id):
+        raise HTTPException(status_code=403, detail="Captains can bid only for their assigned franchise.")
+
     state = db.query(AuctionState).filter(AuctionState.id == 1).first()
     if not state or not state.current_player_id:
         raise HTTPException(status_code=400, detail="No active player up for auction.")

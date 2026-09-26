@@ -6,10 +6,10 @@ This document provides complete technical recommendations for database managemen
 
 ## 1. Development vs. Production Database Architecture
 
-### **Local Development (Current Setup)**
-- **Database Engine**: **SQLite** via SQLAlchemy ORM (`auction.db`).
-- **Benefits**: Zero setup overhead, single file portability, instant local debugging.
-- **Location**: `backend/auction.db`.
+### **Local Development**
+- **Database Engine**: **PostgreSQL** via SQLAlchemy ORM.
+- **Configuration**: Set `DATABASE_URL` in `backend/.env`; see `backend/.env.example` for the URL format.
+- The backend requires a PostgreSQL `DATABASE_URL`; it will not start without one.
 
 ### **Production Recommended Stack**
 For a live production auction with hundreds of simultaneous viewers and high-concurrency bidding, use **PostgreSQL**:

@@ -131,3 +131,14 @@ export interface AuditLog {
 
 export type ViewMode = 'public' | 'projector' | 'bidding' | 'admin' | 'register' | 'squads';
 
+export type AuthRole = 'Super Admin' | 'Admin' | 'Operator' | 'Captain';
+
+export interface AuthSession {
+  access_token: string;
+  token_type: 'bearer';
+  role: AuthRole;
+  franchise_id: number | null;
+  expires_in: number;
+  expires_at: number;
+}
+

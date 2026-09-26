@@ -5,8 +5,16 @@ export class AuctionWebSocket {
   private handlers: MessageHandler[] = [];
   private reconnectInterval: number = 2000;
   private isExplicitClose: boolean = false;
+  private reconnectTimer: number | null = null;
 
   public connect() {
+    this.isExplicitClose = false;
+    if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) return;
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     let wsUrl: string;
     const envApiUrl = import.meta.env.VITE_API_URL;
     if (envApiUrl) {
@@ -26,13 +34,14 @@ export class AuctionWebSocket {
     }
 
     console.log(`Connecting to WebSocket: ${wsUrl}`);
-    this.ws = new WebSocket(wsUrl);
+    const connection = new WebSocket(wsUrl);
+    this.ws = connection;
 
-    this.ws.onopen = () => {
+    connection.onopen = () => {
       console.log('WebSocket connected');
     };
 
-    this.ws.onmessage = (event) => {
+    connection.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
         this.handlers.forEach((handler) => handler(message));
@@ -41,14 +50,18 @@ export class AuctionWebSocket {
       }
     };
 
-    this.ws.onclose = () => {
+    connection.onclose = () => {
       console.log('WebSocket connection closed.');
+      if (this.ws === connection) this.ws = null;
       if (!this.isExplicitClose) {
-        setTimeout(() => this.connect(), this.reconnectInterval);
+        this.reconnectTimer = window.setTimeout(() => {
+          this.reconnectTimer = null;
+          this.connect();
+        }, this.reconnectInterval);
       }
     };
 
-    this.ws.onerror = (err) => {
+    connection.onerror = (err) => {
       console.error('WebSocket error:', err);
     };
   }
@@ -62,8 +75,15 @@ export class AuctionWebSocket {
 
   public disconnect() {
     this.isExplicitClose = true;
-    if (this.ws) {
-      this.ws.close();
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const connection = this.ws;
+    this.ws = null;
+    if (connection) {
+      connection.onclose = null;
+      connection.close();
     }
   }
 }

@@ -1,19 +1,21 @@
 import React, { useState } from 'react';
 import type { AuctionState, Franchise } from '../types';
 import { api } from '../services/api';
-import { Smartphone, Zap, AlertCircle, Shield, CheckCircle } from 'lucide-react';
+import { Smartphone, Zap, AlertCircle, Shield, CheckCircle, LogOut } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 interface FranchiseBiddingViewProps {
   auctionState: AuctionState | null;
   franchises: Franchise[];
   onRefreshState: () => void;
+  onLogout: () => void;
 }
 
 export const FranchiseBiddingView: React.FC<FranchiseBiddingViewProps> = ({
   auctionState,
   franchises,
   onRefreshState,
+  onLogout,
 }) => {
   const [selectedFranchiseId, setSelectedFranchiseId] = useState<number | null>(franchises[0]?.id || null);
   const [biddingError, setBiddingError] = useState<string | null>(null);
@@ -58,7 +60,15 @@ export const FranchiseBiddingView: React.FC<FranchiseBiddingViewProps> = ({
   return (
     <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
       {/* Console Title Banner */}
-      <div className="glass-panel rounded-3xl p-6 border border-indigo-500/30 text-center space-y-2 shadow-2xl">
+      <div className="glass-panel rounded-3xl p-6 border border-indigo-500/30 text-center space-y-2 shadow-2xl relative">
+        <button
+          type="button"
+          onClick={onLogout}
+          className="absolute right-4 top-4 inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800 text-gray-200 hover:bg-gray-700 text-xs font-bold"
+        >
+          <LogOut className="w-4 h-4" />
+          Sign out
+        </button>
         <div className="flex items-center justify-center space-x-2 text-indigo-400 text-xs font-bold uppercase tracking-wider">
           <Smartphone className="w-4 h-4" />
           <span>Team Captains &amp; Franchise Bidding Deck</span>

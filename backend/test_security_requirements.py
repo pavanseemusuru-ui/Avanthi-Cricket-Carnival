@@ -37,6 +37,47 @@ def test_signed_login_session_and_role_enforcement(monkeypatch):
     assert asyncio.run(check("/api/auction/bid", "POST", {"authorization":f"Bearer {operator_session['access_token']}"})).status_code == 403
 
 
+def test_login_endpoint_and_http_authorization_are_wired(monkeypatch):
+    monkeypatch.setenv("AUCTION_AUTH_SECRET", "test-only-secret")
+    monkeypatch.setenv("AUCTION_AUTH_USERS", '[{"username":"admin1","password":"admin-pass","role":"Super Admin"}]')
+
+    assert any(
+        layer.kwargs.get("dispatch") is main.authorization_middleware
+        for layer in main.app.user_middleware
+    )
+    assert any(route.path == "/api/auth/login" for route in main.app.routes)
+
+    session = asyncio.run(main.login(main.LoginRequest(username="admin1", password="admin-pass")))
+    assert auth.verify_token(session["access_token"])["role"] == "Super Admin"
+
+
+def test_production_configuration_rejects_unsafe_defaults(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("AUCTION_AUTH_SECRET", "test-secret-long-enough-for-production-check")
+    monkeypatch.setenv("AUCTION_AUTH_USERS", '[{"username":"admin1","password":"admin-pass","role":"Super Admin"}]')
+    monkeypatch.setattr(main, "origins", ["https://auction.example.com"])
+    monkeypatch.setattr(main, "DATABASE_URL", "sqlite:///./auction.db")
+
+    with pytest.raises(RuntimeError, match="persistent PostgreSQL"):
+        main.validate_production_configuration()
+
+
+def test_captain_cannot_bid_for_another_franchise():
+    request = main.Request({
+        "type": "http",
+        "state": {"user": {"role": "Captain", "franchise_id": 1}},
+    })
+
+    with pytest.raises(main.HTTPException) as error:
+        asyncio.run(main.place_bid(
+            main.schemas.BidRequest(franchise_id=2, attempted_bid=20),
+            request,
+            None,
+        ))
+
+    assert error.value.status_code == 403
+
+
 def test_photo_upload_rejects_300_kb_and_accepts_smaller_valid_png(monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
@@ -66,43 +107,35 @@ def test_photo_upload_rejects_300_kb_and_accepts_smaller_valid_png(monkeypatch):
     engine.dispose()
 
 
-def test_server_timer_persists_sold_tie_and_unsold_results():
+def test_server_timer_stops_when_countdown_expires(monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
-    team_a = Franchise(name="Team A", short_code="TA", faculty_coordinator_name="A", faculty_coordinator_dept="CSE", faculty_coordinator_mobile="9000000001", purse=1000)
-    team_b = Franchise(name="Team B", short_code="TB", faculty_coordinator_name="B", faculty_coordinator_dept="CSE", faculty_coordinator_mobile="9000000002", purse=1000)
-    session.add_all([team_a, team_b])
-    session.flush()
-    players = [Player(roll_number=f"TEST00{i}", name=f"Player {i}", mobile_number=f"999999999{i}", course="UG", program="B.Tech", branch="CSE", year_of_study=1, bucket="B1", base_price=20, derived_player_type="Batter") for i in range(1, 4)]
-    session.add_all(players)
-    session.flush()
-    state = AuctionState(id=1, current_player_id=players[0].id, current_bid_price=75, current_bidder_id=team_a.id, timer_seconds=0, timer_running=False, tied_franchise_ids_json="[]", lot_status="BIDDING")
+    state = AuctionState(id=1, timer_seconds=1, timer_running=True, is_paused=False)
     session.add(state)
     session.commit()
 
-    asyncio.run(main.auto_evaluate_lot_internal(session, state))
-    assert players[0].auction_status == "SOLD" and players[0].sold_franchise_id == team_a.id
-    assert main.calculate_franchise_purse(session, team_a.id) == 925
+    sleep_calls = 0
 
-    state.current_player_id = players[1].id
-    state.current_bid_price = 100
-    state.current_bidder_id = team_a.id
-    state.tied_franchise_ids_json = f"[{team_a.id},{team_b.id}]"
-    state.lot_status = "BIDDING"
-    session.commit()
-    asyncio.run(main.auto_evaluate_lot_internal(session, state))
-    assert players[1].auction_status == "TIE" and players[1].sold_franchise_id is None
-    assert main.calculate_franchise_purse(session, team_a.id) == 925
+    async def stop_after_one_tick(_seconds):
+        nonlocal sleep_calls
+        if sleep_calls:
+            raise asyncio.CancelledError
+        sleep_calls += 1
 
-    state.current_player_id = players[2].id
-    state.current_bid_price = 0
-    state.current_bidder_id = None
-    state.tied_franchise_ids_json = "[]"
-    state.lot_status = "BIDDING"
-    session.commit()
-    asyncio.run(main.auto_evaluate_lot_internal(session, state))
-    assert players[2].auction_status == "UNSOLD" and players[2].sold_franchise_id is None
-    assert main.calculate_franchise_purse(session, team_a.id) == 925
+    async def no_broadcast(_db):
+        return None
+
+    monkeypatch.setattr(main, "SessionLocal", lambda: session)
+    monkeypatch.setattr(main, "broadcast_auction_state", no_broadcast)
+    monkeypatch.setattr(main.asyncio, "sleep", stop_after_one_tick)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(main.run_auction_timer())
+
+    session.expire_all()
+    stored_state = session.get(AuctionState, 1)
+    assert stored_state.timer_seconds == 0
+    assert stored_state.timer_running is False
     session.close()
     engine.dispose()

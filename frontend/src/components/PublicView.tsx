@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import type { AuctionState, Franchise, Player } from '../types';
+import type { AuctionState, Franchise, Player, AuthRole } from '../types';
 import { api } from '../services/api';
-import { AlertTriangle, Search, Shield, Trophy, Flame, ChevronDown, Zap } from 'lucide-react';
+import { AlertTriangle, Search, Shield, Trophy, Flame, Zap } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 interface PublicViewProps {
@@ -9,13 +9,13 @@ interface PublicViewProps {
   franchises: Franchise[];
   players: Player[];
   onRefreshState?: () => void;
+  userRole: AuthRole | null;
+  userFranchiseId: number | null;
+  onRequireLogin: () => void;
+  onRequireAdmin: () => void;
 }
 
-export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises, players, onRefreshState }) => {
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedBucket, setSelectedBucket] = useState('ALL');
-  const [selectedType, setSelectedType] = useState('ALL');
-
+export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises, players, onRefreshState, userRole, userFranchiseId, onRequireLogin, onRequireAdmin }) => {
   // Fast lot search state
   const [lotSearchQuery, setLotSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -38,6 +38,10 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
   }).slice(0, 8);
 
   const handleSelectLotPlayer = async (player: Player) => {
+    if (userRole !== 'Admin' && userRole !== 'Super Admin') {
+      onRequireAdmin();
+      return;
+    }
     setBiddingMsg(null);
     try {
       await api.selectPlayerForLot(player.id);
@@ -50,6 +54,10 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
   };
 
   const handleSetBucket = async (b: string) => {
+    if (userRole !== 'Admin' && userRole !== 'Super Admin') {
+      onRequireAdmin();
+      return;
+    }
     setBiddingMsg(null);
     try {
       await api.setActiveBucket(b);
@@ -60,6 +68,18 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
   };
 
   const handlePlaceBidForFranchise = async (franchiseId: number) => {
+    if (!userRole) {
+      onRequireLogin();
+      return;
+    }
+    if (userRole === 'Operator') {
+      setBiddingMsg({ type: 'error', text: 'This account is not authorized to place bids.' });
+      return;
+    }
+    if (userRole === 'Captain' && userFranchiseId !== franchiseId) {
+      setBiddingMsg({ type: 'error', text: 'Captain accounts can bid only for their assigned franchise.' });
+      return;
+    }
     if (!activePlayer) {
       setBiddingMsg({ type: 'error', text: 'No active player lot up for auction.' });
       return;
@@ -75,13 +95,6 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
       setBiddingMsg({ type: 'error', text: err.message || 'Bid rejected' });
     }
   };
-
-  const filteredPlayers = players.filter((p) => {
-    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.roll_number.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesBucket = selectedBucket === 'ALL' || p.bucket === selectedBucket;
-    const matchesType = selectedType === 'ALL' || p.derived_player_type === selectedType;
-    return matchesSearch && matchesBucket && matchesType;
-  });
 
   return (
     <div className="space-y-6 p-4 md:p-6 max-w-7xl mx-auto">

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import type { ViewMode, AuctionState, Franchise, Player, AuditLog, AdminPlayer, AdminFranchise } from './types';
+import type { ViewMode, AuctionState, Franchise, Player, AuditLog, AdminPlayer, AdminFranchise, AuthRole, AuthSession } from './types';
 import { api } from './services/api';
 import { auctionWs } from './services/websocket';
 import { Sidebar } from './components/Sidebar';
@@ -24,25 +24,33 @@ export const App: React.FC = () => {
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
 
   // Auth State
-  const [adminRole, setAdminRole] = useState<'Super Admin' | 'Operator' | null>(() => {
-    return (localStorage.getItem('acc_admin_role') as any) || null;
-  });
+  const [authSession, setAuthSession] = useState<AuthSession | null>(() => api.getSession());
   const [isAdminLoginOpen, setIsAdminLoginOpen] = useState(false);
+  const [loginDestination, setLoginDestination] = useState<'admin' | 'bidding'>('admin');
+  const adminRole = authSession?.role ?? null;
+  const canViewAdmin = adminRole === 'Super Admin' || adminRole === 'Admin' || adminRole === 'Operator';
 
   // Modals
   const [isSquadAnalysisOpen, setIsSquadAnalysisOpen] = useState(false);
   const [isAuditLogOpen, setIsAuditLogOpen] = useState(false);
 
-  const fetchInitialData = async () => {
+  const fetchInitialData = async (session = authSession) => {
     try {
-      const [stateData, fData, aFData, pData, aPData, logsData] = await Promise.all([
+      const [stateData, fData, pData] = await Promise.all([
         api.getAuctionState(),
         api.getPublicFranchises(),
-        api.getAdminFranchises().catch(() => []),
         api.getPublicPlayers(),
-        api.getAdminPlayers().catch(() => []),
-        api.getAuditLog().catch(() => []),
       ]);
+      let aFData: AdminFranchise[] = [];
+      let aPData: AdminPlayer[] = [];
+      let logsData: AuditLog[] = [];
+      if (session && ['Super Admin', 'Admin', 'Operator'].includes(session.role)) {
+        [aFData, aPData, logsData] = await Promise.all([
+          api.getAdminFranchises(),
+          api.getAdminPlayers(),
+          api.getAuditLog(),
+        ]);
+      }
       setAuctionState(stateData);
       setFranchises(fData);
       setAdminFranchises(aFData);
@@ -58,18 +66,21 @@ export const App: React.FC = () => {
     fetchInitialData();
 
     // Connect to WebSocket for real-time live updates
-    auctionWs.connect();
-
     const unsubscribe = auctionWs.subscribe((msg) => {
       if (msg.type === 'AUCTION_STATE_UPDATE') {
         setAuctionState(msg.data);
         // Refresh franchises & players to keep purse and squad sync'd
         api.getPublicFranchises().then(setFranchises).catch(console.error);
         api.getPublicPlayers().then(setPlayers).catch(console.error);
-        api.getAdminPlayers().then(setAdminPlayers).catch(console.error);
-        api.getAuditLog().then(setAuditLogs).catch(console.error);
+        const session = api.getSession();
+        if (session && ['Super Admin', 'Admin', 'Operator'].includes(session.role)) {
+          api.getAdminFranchises().then(setAdminFranchises).catch(console.error);
+          api.getAdminPlayers().then(setAdminPlayers).catch(console.error);
+          api.getAuditLog().then(setAuditLogs).catch(console.error);
+        }
       }
     });
+    auctionWs.connect();
 
     return () => {
       unsubscribe();
@@ -77,25 +88,54 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    const handleAuthExpired = () => {
+      setAuthSession(null);
+      setCurrentView('public');
+    };
+    window.addEventListener('auction:auth-expired', handleAuthExpired);
+    return () => window.removeEventListener('auction:auth-expired', handleAuthExpired);
+  }, []);
+
   const handleSelectView = (view: ViewMode) => {
-    if (view === 'admin' && !adminRole) {
+    if (view === 'admin' && !canViewAdmin) {
+      setLoginDestination('admin');
+      setIsAdminLoginOpen(true);
+      return;
+    }
+    if (view === 'bidding' && !['Captain', 'Admin', 'Super Admin'].includes(adminRole ?? '')) {
+      if (adminRole === 'Operator') {
+        alert('This account is not authorized for franchise bidding.');
+        return;
+      }
+      setLoginDestination('bidding');
       setIsAdminLoginOpen(true);
       return;
     }
     setCurrentView(view);
   };
 
-  const handleAdminLoginSuccess = (role: 'Super Admin' | 'Operator') => {
-    setAdminRole(role);
-    localStorage.setItem('acc_admin_role', role);
+  const handleAdminLoginSuccess = (session: AuthSession) => {
+    setAuthSession(session);
     setIsAdminLoginOpen(false);
-    setCurrentView('admin');
+    setCurrentView(session.role === 'Captain' ? 'bidding' : loginDestination);
+    fetchInitialData(session);
   };
 
   const handleAdminLogout = () => {
-    setAdminRole(null);
-    localStorage.removeItem('acc_admin_role');
+    api.logout();
+    setAuthSession(null);
     setCurrentView('public');
+  };
+
+  const requireCaptainLogin = () => {
+    setLoginDestination('bidding');
+    setIsAdminLoginOpen(true);
+  };
+
+  const requireAdminLogin = () => {
+    setLoginDestination('admin');
+    setIsAdminLoginOpen(true);
   };
 
   const handleUndo = async (auditId: number, reason: string) => {
@@ -108,9 +148,34 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleExportExcel = () => {
-    window.open(api.exportExcelUrl(), '_blank');
+  const handleExportExcel = async () => {
+    if (!canViewAdmin) {
+      requireAdminLogin();
+      return;
+    }
+    try {
+      const url = URL.createObjectURL(await api.exportExcel());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'Avanthi_Cricket_Carnival_Auction_Data.xlsx';
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Export failed');
+    }
   };
+
+  const openAuditLog = () => {
+    if (!canViewAdmin) {
+      requireAdminLogin();
+      return;
+    }
+    setIsAuditLogOpen(true);
+  };
+
+  const biddingFranchises = authSession?.role === 'Captain'
+    ? franchises.filter((franchise) => franchise.id === authSession.franchise_id)
+    : franchises;
 
   const isProjectorView = currentView === 'projector';
 
@@ -121,7 +186,7 @@ export const App: React.FC = () => {
         currentView={currentView}
         onSelectView={handleSelectView}
         onOpenSquadAnalysis={() => setIsSquadAnalysisOpen(true)}
-        onOpenAuditLog={() => setIsAuditLogOpen(true)}
+        onOpenAuditLog={openAuditLog}
         onExportExcel={handleExportExcel}
         collapsed={isProjectorView}
       />
@@ -129,7 +194,16 @@ export const App: React.FC = () => {
       {/* Main Content Area — offset by sidebar width */}
       <main className={`flex-1 transition-all duration-200 ${isProjectorView ? 'md:ml-16' : 'md:ml-64'}`}>
         {currentView === 'public' && (
-          <PublicView auctionState={auctionState} franchises={franchises} players={players} onRefreshState={fetchInitialData} />
+          <PublicView
+            auctionState={auctionState}
+            franchises={franchises}
+            players={players}
+            onRefreshState={fetchInitialData}
+            userRole={adminRole}
+            userFranchiseId={authSession?.franchise_id ?? null}
+            onRequireLogin={requireCaptainLogin}
+            onRequireAdmin={requireAdminLogin}
+          />
         )}
 
         {currentView === 'projector' && (
@@ -139,8 +213,9 @@ export const App: React.FC = () => {
         {currentView === 'bidding' && (
           <FranchiseBiddingView
             auctionState={auctionState}
-            franchises={franchises}
+            franchises={biddingFranchises}
             onRefreshState={fetchInitialData}
+            onLogout={handleAdminLogout}
           />
         )}
 
@@ -149,11 +224,9 @@ export const App: React.FC = () => {
             auctionState={auctionState}
             franchises={adminFranchises}
             adminPlayers={adminPlayers}
-            auditLogs={auditLogs}
-            adminRole={adminRole}
+            adminRole={adminRole as AuthRole | null}
             onLogout={handleAdminLogout}
             onRefreshState={fetchInitialData}
-            onOpenAuditLog={() => setIsAuditLogOpen(true)}
           />
         )}
 
