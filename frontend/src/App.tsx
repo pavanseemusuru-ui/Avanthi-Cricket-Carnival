@@ -34,31 +34,38 @@ export const App: React.FC = () => {
   const [isSquadAnalysisOpen, setIsSquadAnalysisOpen] = useState(false);
   const [isAuditLogOpen, setIsAuditLogOpen] = useState(false);
 
-  const fetchInitialData = async (session = authSession) => {
+  const fetchInitialData = async (session = api.getSession(), retries = 3) => {
     try {
       const [stateData, fData, pData] = await Promise.all([
         api.getAuctionState(),
         api.getPublicFranchises(),
         api.getPublicPlayers(),
       ]);
-      let aFData: AdminFranchise[] = [];
-      let aPData: AdminPlayer[] = [];
-      let logsData: AuditLog[] = [];
-      if (session && ['Super Admin', 'Admin', 'Operator'].includes(session.role)) {
-        [aFData, aPData, logsData] = await Promise.all([
-          api.getAdminFranchises(),
-          api.getAdminPlayers(),
-          api.getAuditLog(),
-        ]);
-      }
       setAuctionState(stateData);
       setFranchises(fData);
-      setAdminFranchises(aFData);
       setPlayers(pData);
-      setAdminPlayers(aPData);
-      setAuditLogs(logsData);
+
+      if (session && ['Super Admin', 'Admin', 'Operator'].includes(session.role)) {
+        try {
+          const [aFData, aPData, logsData] = await Promise.all([
+            api.getAdminFranchises(),
+            api.getAdminPlayers(),
+            api.getAuditLog(),
+          ]);
+          setAdminFranchises(aFData);
+          setAdminPlayers(aPData);
+          setAuditLogs(logsData);
+        } catch (adminErr) {
+          console.warn('Admin session expired or fetch failed, resetting auth session:', adminErr);
+          api.logout();
+          setAuthSession(null);
+        }
+      }
     } catch (err) {
       console.error('Error fetching initial data:', err);
+      if (retries > 0) {
+        window.setTimeout(() => { void fetchInitialData(session, retries - 1); }, 1500);
+      }
     }
   };
 

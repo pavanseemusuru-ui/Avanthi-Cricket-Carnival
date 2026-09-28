@@ -75,7 +75,7 @@ async def enforce_api_permissions(request: Request, call_next):
                    "/api/roll-parse", "/api/players/lookup"}
     if method == "GET" and path in public_gets:
         return await call_next(request)
-    if method == "POST" and path == "/api/players/register":
+    if method == "POST" and path in {"/api/players/register", "/api/auction/set-bucket"}:
         return await call_next(request)
 
     authorization = request.headers.get("authorization", "")

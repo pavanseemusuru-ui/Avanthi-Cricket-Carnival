@@ -1,0 +1,35 @@
+[33madf345d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;32mbackup-adf345d[m[33m)[m refs/heads/backup-adf345d@{0}: branch: Created from main
+[33madf345d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;32mbackup-adf345d[m[33m)[m refs/heads/main@{0}: reset: moving to adf345d
+[33madf345d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;32mbackup-adf345d[m[33m)[m HEAD@{0}: reset: moving to adf345d
+[33m2f6e9d6[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mbackup-current-main[m[33m)[m refs/heads/backup-current-main@{0}: branch: Created from main
+[33m2f6e9d6[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mbackup-current-main[m[33m)[m refs/remotes/origin/main@{0}: update by push
+[33m2f6e9d6[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mbackup-current-main[m[33m)[m refs/heads/main@{1}: commit: change ui to black theme
+[33m2f6e9d6[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mbackup-current-main[m[33m)[m HEAD@{1}: commit: change ui to black theme
+[33madf345d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;32mbackup-adf345d[m[33m)[m HEAD@{2}: reset: moving to adf345d
+[33madf345d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;32mbackup-adf345d[m[33m)[m refs/remotes/origin/main@{1}: update by push
+[33madf345d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;32mbackup-adf345d[m[33m)[m refs/heads/main@{2}: commit: working database
+[33madf345d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;32mbackup-adf345d[m[33m)[m HEAD@{3}: commit: working database
+[33m24dc3f3[m refs/remotes/origin/main@{2}: update by push
+[33m24dc3f3[m refs/heads/main@{3}: commit: postgresql database connection
+[33m24dc3f3[m HEAD@{4}: commit: postgresql database connection
+[33m4351249[m refs/remotes/origin/main@{3}: update by push
+[33m4351249[m refs/heads/main@{4}: pull --rebase origin main (finish): refs/heads/main onto 1e081a04bc5f5c453f3aec3442f47dc8a15bf516
+[33m4351249[m HEAD@{5}: pull --rebase origin main (finish): returning to refs/heads/main
+[33m4351249[m HEAD@{6}: pull --rebase origin main (pick): Add direct player photo upload
+[33mc158817[m HEAD@{7}: pull --rebase origin main (pick): Add direct player photo upload
+[33m1e081a0[m HEAD@{8}: pull --rebase origin main (start): checkout 1e081a04bc5f5c453f3aec3442f47dc8a15bf516
+[33mb78c94a[m refs/heads/main@{5}: commit: Add direct player photo upload
+[33mb78c94a[m HEAD@{9}: commit: Add direct player photo upload
+[33m382523b[m refs/heads/main@{6}: commit: Add direct player photo upload
+[33m382523b[m HEAD@{10}: commit: Add direct player photo upload
+[33m06e9602[m refs/heads/main@{7}: reset: moving to 06e9602
+[33m06e9602[m HEAD@{11}: reset: moving to 06e9602
+[33m1e081a0[m refs/remotes/origin/main@{4}: update by push
+[33m1e081a0[m refs/heads/main@{8}: pull origin main --allow-unrelated-histories: Merge made by the 'ort' strategy.
+[33m1e081a0[m HEAD@{12}: pull origin main --allow-unrelated-histories: Merge made by the 'ort' strategy.
+[33m7516deb[m refs/remotes/origin/HEAD@{0}: fetch
+[33m7516deb[m refs/remotes/origin/main@{5}: fetch origin: storing head
+[33m06e9602[m refs/heads/main@{9}: Branch: renamed refs/heads/master to refs/heads/main
+[33m06e9602[m HEAD@{13}: Branch: renamed refs/heads/master to refs/heads/main
+[33m06e9602[m refs/heads/main@{10}: commit (initial): Initial commit
+[33m06e9602[m HEAD@{15}: commit (initial): Initial commit

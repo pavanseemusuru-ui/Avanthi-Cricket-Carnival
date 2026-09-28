@@ -28,14 +28,27 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
 
   const activeWarnings = Object.values(scarcityWarnings).filter((w) => w.warning_active);
 
+  const [selectedFilterBucket, setSelectedFilterBucket] = useState<string | null>(null);
+
   // Filter unauctioned players for lot search
   const unauctionedPlayers = players.filter((p) => !p.sold_franchise_id && !p.retained_franchise_id);
 
+  // Calculate unsold counts per bucket
+  const bucketCounts = React.useMemo(() => {
+    const counts: Record<string, number> = { B1: 0, B2: 0, B3: 0, B4: 0, B5: 0, PG: 0 };
+    unauctionedPlayers.forEach((p) => {
+      const b = (p.bucket || 'B3').toUpperCase();
+      counts[b] = (counts[b] || 0) + 1;
+    });
+    return counts;
+  }, [unauctionedPlayers]);
+
   const lotSearchMatches = unauctionedPlayers.filter((p) => {
-    if (!lotSearchQuery.trim()) return false;
+    if (selectedFilterBucket && p.bucket.toUpperCase() !== selectedFilterBucket) return false;
+    if (!lotSearchQuery.trim()) return Boolean(selectedFilterBucket);
     const q = lotSearchQuery.toLowerCase();
     return p.name.toLowerCase().includes(q) || p.roll_number.toLowerCase().includes(q) || p.bucket.toLowerCase().includes(q);
-  }).slice(0, 8);
+  }).slice(0, 10);
 
   const handleSelectLotPlayer = async (player: Player) => {
     if (userRole !== 'Admin' && userRole !== 'Super Admin') {
@@ -54,16 +67,14 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
   };
 
   const handleSetBucket = async (b: string) => {
-    if (userRole !== 'Admin' && userRole !== 'Super Admin') {
-      onRequireAdmin();
-      return;
-    }
     setBiddingMsg(null);
     try {
-      await api.setActiveBucket(b);
+      const res = await api.setActiveBucket(b);
+      setSelectedFilterBucket(b);
+      setBiddingMsg({ type: 'success', text: res.message || `Switched live auction stage to Bucket ${b}!` });
       if (onRefreshState) onRefreshState();
     } catch (err: any) {
-      setBiddingMsg({ type: 'error', text: err.message || 'Failed to set bucket' });
+      setBiddingMsg({ type: 'error', text: err.message || 'Failed to switch bucket' });
     }
   };
 
@@ -100,11 +111,11 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
     <div className="space-y-6 p-4 md:p-6 max-w-7xl mx-auto">
       {/* Alert / Feedback Notification */}
       {biddingMsg && (
-        <div className={`p-4 rounded-2xl border text-xs font-bold shadow-xl flex items-center justify-between ${
-          biddingMsg.type === 'success' ? 'bg-lime-950/80 text-lime-300 border-lime-500/50' : 'bg-red-950/80 text-red-300 border-red-500/50'
+        <div className={`p-4 rounded-2xl border text-xs font-bold shadow-xl flex items-center justify-between transition-all animate-in fade-in slide-in-from-top-2 ${
+          biddingMsg.type === 'success' ? 'bg-lime-950/90 text-lime-300 border-lime-500/50' : 'bg-red-950/90 text-red-300 border-red-500/50'
         }`}>
           <span>{biddingMsg.text}</span>
-          <button onClick={() => setBiddingMsg(null)} className="text-xs font-bold underline ml-2">Dismiss</button>
+          <button onClick={() => setBiddingMsg(null)} className="text-xs font-bold underline ml-2 hover:opacity-80">Dismiss</button>
         </div>
       )}
 
@@ -128,33 +139,63 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
       {/* Quick Auction Control & Player Search Bar */}
       <div className="glass-panel rounded-3xl p-4 border border-zinc-800 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
         {/* Bucket Selector Tabs */}
-        <div className="flex items-center space-x-2 overflow-x-auto w-full md:w-auto pb-1 md:pb-0">
-          <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider shrink-0">Bucket Filter:</span>
-          {['B3', 'B4', 'B2', 'B5', 'B1', 'PG'].map((b) => {
-            const isCurrent = auctionState?.current_bucket === b;
+        <div className="flex items-center space-x-2 overflow-x-auto w-full md:w-auto pb-1 md:pb-0 scrollbar-none">
+          <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider shrink-0 flex items-center gap-1">
+            <Zap className="w-3.5 h-3.5 text-lime-400" /> Stage Buckets:
+          </span>
+          {['B1', 'B2', 'B3', 'B4', 'B5', 'PG'].map((b) => {
+            const isStageLive = auctionState?.current_bucket === b;
+            const isFiltered = selectedFilterBucket === b;
+            const count = bucketCounts[b] || 0;
+
             return (
               <button
                 key={b}
                 onClick={() => handleSetBucket(b)}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-extrabold transition shrink-0 ${
-                  isCurrent
-                    ? 'bg-white text-black shadow-lg font-black ring-1 ring-white'
-                    : 'bg-[#18191e] text-zinc-400 hover:bg-zinc-800 border border-zinc-800'
+                title={userRole === 'Admin' || userRole === 'Super Admin' ? `Set live stage to ${b}` : `Filter search by ${b}`}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all duration-200 shrink-0 flex items-center space-x-1.5 cursor-pointer ${
+                  isStageLive
+                    ? 'bg-gradient-to-r from-lime-400 to-emerald-400 text-black shadow-lg shadow-lime-500/20 ring-2 ring-lime-300 font-black'
+                    : isFiltered
+                    ? 'bg-amber-500/20 border border-amber-400 text-amber-300 shadow-md font-bold'
+                    : 'bg-[#18191e] text-zinc-300 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700'
                 }`}
               >
-                {b}
+                <span>{b}</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                  isStageLive
+                    ? 'bg-black text-lime-400'
+                    : isFiltered
+                    ? 'bg-amber-400/20 text-amber-300'
+                    : 'bg-zinc-800 text-zinc-400'
+                }`}>
+                  {count}
+                </span>
+                {isStageLive && (
+                  <span className="text-[9px] bg-black text-white px-1 py-0.5 rounded font-black tracking-tighter uppercase ml-0.5">
+                    LIVE
+                  </span>
+                )}
               </button>
             );
           })}
+          {selectedFilterBucket && (
+            <button
+              onClick={() => { setSelectedFilterBucket(null); setBiddingMsg(null); }}
+              className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold text-zinc-400 hover:text-white bg-zinc-900 border border-zinc-800 hover:border-zinc-700 transition"
+            >
+              Clear Filter
+            </button>
+          )}
         </div>
 
         {/* Quick Player Search for Direct Lot Assignment */}
         <div className="relative w-full md:w-72">
-          <div className="flex items-center glass-input rounded-xl px-3 py-2 border border-zinc-800">
+          <div className="flex items-center glass-input rounded-xl px-3 py-2 border border-zinc-800 focus-within:border-zinc-600 transition">
             <Search className="w-4 h-4 text-zinc-400 mr-2 shrink-0" />
             <input
               type="text"
-              placeholder="Search Player / Roll No..."
+              placeholder={selectedFilterBucket ? `Search in ${selectedFilterBucket}...` : "Search Player / Roll No..."}
               value={lotSearchQuery}
               onChange={(e) => { setLotSearchQuery(e.target.value); setIsSearchOpen(true); }}
               onFocus={() => setIsSearchOpen(true)}
@@ -163,12 +204,16 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
           </div>
 
           {isSearchOpen && lotSearchMatches.length > 0 && (
-            <div className="absolute top-full left-0 right-0 mt-1 bg-[#121318] border border-zinc-800 rounded-xl shadow-2xl z-50 overflow-hidden max-h-60 overflow-y-auto">
+            <div className="absolute top-full left-0 right-0 mt-1 bg-[#121318] border border-zinc-800 rounded-xl shadow-2xl z-50 overflow-hidden max-h-64 overflow-y-auto">
+              <div className="p-2 bg-zinc-900/80 border-b border-zinc-800 text-[10px] text-zinc-400 font-bold flex justify-between items-center">
+                <span>{selectedFilterBucket ? `Bucket ${selectedFilterBucket} Players` : 'Matching Unauctioned Players'}</span>
+                <button onClick={() => setIsSearchOpen(false)} className="text-zinc-500 hover:text-white">Close</button>
+              </div>
               {lotSearchMatches.map((p) => (
                 <div
                   key={p.id}
                   onClick={() => handleSelectLotPlayer(p)}
-                  className="p-2.5 hover:bg-zinc-800 cursor-pointer border-b border-zinc-800 text-xs flex items-center justify-between"
+                  className="p-2.5 hover:bg-zinc-800 cursor-pointer border-b border-zinc-800 text-xs flex items-center justify-between transition"
                 >
                   <div>
                     <p className="font-bold text-white">{p.name}</p>

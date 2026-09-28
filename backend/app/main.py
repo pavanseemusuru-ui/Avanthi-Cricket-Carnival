@@ -220,17 +220,38 @@ async def broadcast_auction_state(db: Session):
         "data": state_data
     })
 
+def normalize_bucket_name(raw_bucket: Optional[str]) -> str:
+    if not raw_bucket:
+        return "B3"
+    b = str(raw_bucket).strip().upper()
+    if b in {"B1", "B2", "B3", "B4", "B5", "PG"}:
+        return b
+    if b.startswith("BUCKET"):
+        num = b.replace("BUCKET", "").strip()
+        if num in {"1", "2", "3", "4", "5"}:
+            return f"B{num}"
+    if b in {"1", "2", "3", "4", "5"}:
+        return f"B{b}"
+    if "1" in b: return "B1"
+    if "2" in b: return "B2"
+    if "3" in b: return "B3"
+    if "4" in b: return "B4"
+    if "5" in b: return "B5"
+    if "PG" in b: return "PG"
+    return "B3"
+
 def get_franchise_bucket_counts(db: Session, franchise_id: int) -> Dict[str, int]:
     # Squad quotas count only auction purchases; retained and referred players are free.
     players = db.query(Player).filter(
         Player.sold_franchise_id == franchise_id,
-        Player.sold_type.in_(["sold", "allotted", "scouted", "direct_assigned"]),
+        (Player.sold_type.is_(None) | ~Player.sold_type.in_(["retained", "referred"])),
     ).all()
     
     counts = {"B1": 0, "B2": 0, "B3": 0, "B4": 0, "B5": 0, "PG": 0}
     for p in players:
-        if p.bucket in counts:
-            counts[p.bucket] += 1
+        b = normalize_bucket_name(p.bucket)
+        if b in counts:
+            counts[b] += 1
     return counts
 
 def get_franchise_auction_purchases_count(db: Session, franchise_id: int) -> int:
@@ -1464,15 +1485,60 @@ async def set_draw_mode(mode: str, request: Request, db: Session = Depends(get_d
 @app.post("/api/auction/set-bucket")
 async def set_active_bucket(bucket: str, request: Request, db: Session = Depends(get_db)):
     state = get_or_create_auction_state(db)
-    normalized_bucket = bucket.upper()
+    normalized_bucket = normalize_bucket_name(bucket)
     if normalized_bucket not in {"B1", "B2", "B3", "B4", "B5", "PG"}:
         raise HTTPException(status_code=400, detail="Unknown auction bucket.")
+    
     state.current_bucket = normalized_bucket
-    await draw_next_player_internal(db, state)
+
+    # Find next available player in this specific requested bucket
+    available = db.query(Player).filter(
+        Player.bucket == normalized_bucket,
+        Player.payment_status == "paid",
+        Player.sold_franchise_id.is_(None),
+        Player.retained_franchise_id.is_(None),
+        Player.referred_franchise_id.is_(None),
+    )
+    
+    next_player = available.filter(
+        Player.round_one_complete.is_(False),
+        Player.is_skipped.is_(False),
+    ).order_by(Player.random_lot_number.asc(), Player.id.asc()).first()
+
+    if not next_player:
+        # Fallback to skipped players in this bucket if any
+        next_player = available.filter(
+            Player.round_one_complete.is_(False),
+            Player.is_skipped.is_(True),
+        ).order_by(Player.random_lot_number.asc(), Player.id.asc()).first()
+        if next_player:
+            next_player.is_skipped = False
+            next_player.skip_recalled = True
+
+    if not next_player:
+        # Fallback to any remaining player in this bucket regardless of round
+        next_player = available.order_by(Player.random_lot_number.asc(), Player.id.asc()).first()
+
+    if next_player:
+        state.current_player_id = next_player.id
+        state.current_bid_price = 0
+        state.current_bidder_id = None
+        state.timer_duration_seconds = 30
+        state.timer_seconds = 30
+        state.timer_running = False
+        state.passed_franchise_ids = "[]"
+        msg = f"Active stage bucket set to {normalized_bucket}. Player {next_player.name} drawn!"
+    else:
+        state.current_player_id = None
+        state.current_bid_price = 0
+        state.current_bidder_id = None
+        state.timer_running = False
+        msg = f"Active stage bucket set to {normalized_bucket}, but no unsold players remain in Bucket {normalized_bucket}."
+
     db.add(AuditLog(action_type="SET_BUCKET", performed_by=audit_actor(request, "Super Admin"), reason=f"Active bucket set to {normalized_bucket}."))
     db.commit()
     await broadcast_auction_state(db)
-    return {"message": f"Active bucket set to {state.current_bucket} and player drawn."}
+    return {"message": msg}
 
 @app.post("/api/auction/select-player")
 async def select_player_for_lot(player_id: int, request: Request, db: Session = Depends(get_db)):

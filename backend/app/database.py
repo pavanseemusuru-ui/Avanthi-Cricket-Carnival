@@ -12,9 +12,12 @@ else:
     load_dotenv(find_dotenv(usecwd=True))
     load_dotenv()
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+default_db_path = BASE_DIR / "auction.db"
+
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-if not DATABASE_URL:
-    DATABASE_URL = "sqlite:///./auction.db"
+if not DATABASE_URL or DATABASE_URL == "sqlite:///./auction.db":
+    DATABASE_URL = f"sqlite:///{default_db_path.as_posix()}"
 
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import type { Franchise, Player, AuctionState } from '../types';
 import { Trophy, Users } from 'lucide-react';
+import { normalizeBucket } from '../utils/bucket';
 
 interface SquadsLeaderboardViewProps {
   franchises: Franchise[];
@@ -74,7 +75,10 @@ export const SquadsLeaderboardView: React.FC<SquadsLeaderboardViewProps> = ({
                 <p className="text-zinc-400 font-bold uppercase tracking-wider">Bucket Progress</p>
                 <div className="grid grid-cols-5 gap-1 text-center font-bold">
                   {['B1', 'B2', 'B3', 'B4', 'B5'].map((b) => {
-                    const count = f.bucket_counts?.[b] || 0;
+                    const squadPurchasesInBucket = squadMembers.filter(
+                      (p) => normalizeBucket(p.bucket) === b && p.sold_type !== 'retained' && p.sold_type !== 'referred'
+                    ).length;
+                    const count = Math.max(f.bucket_counts?.[b] || 0, squadPurchasesInBucket);
                     const req = auctionState?.bucket_minimums?.[b] ?? 2;
                     const isMet = count >= req;
                     return (

@@ -1,14 +1,16 @@
 $ErrorActionPreference = 'Stop'
+$rootDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 Write-Host "Starting Backend and Frontend servers..." -ForegroundColor Green
 
-$backendPath = Join-Path $PSScriptRoot "backend"
-$frontendPath = Join-Path $PSScriptRoot "frontend"
+$backendPath = Join-Path $rootDir "backend"
+$frontendPath = Join-Path $rootDir "frontend"
+$backendScript = Join-Path $backendPath "run-dev.ps1"
 
 Start-Process -FilePath powershell.exe -WorkingDirectory $backendPath -ArgumentList @(
-	'-ExecutionPolicy', 'Bypass', '-NoExit', '-File', '.\run-dev.ps1'
+	'-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-File', "`"$backendScript`""
 )
 Start-Process -FilePath powershell.exe -WorkingDirectory $frontendPath -ArgumentList @(
-	'-NoExit', '-Command', 'npm run dev'
+	'-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-Command', "Set-Location `"$frontendPath`"; npm run dev"
 )
 
 Write-Host "Backend: http://localhost:8005" -ForegroundColor Cyan
