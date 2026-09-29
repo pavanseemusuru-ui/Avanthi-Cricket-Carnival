@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { ViewMode, AuctionState, Franchise, Player, AuditLog, AdminPlayer, AdminFranchise, AuthRole, AuthSession } from './types';
 import { api } from './services/api';
 import { auctionWs } from './services/websocket';
@@ -22,6 +22,9 @@ export const App: React.FC = () => {
   const [players, setPlayers] = useState<Player[]>([]);
   const [adminPlayers, setAdminPlayers] = useState<AdminPlayer[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [isBackendConnected, setIsBackendConnected] = useState(false);
+  const [connectionAttempts, setConnectionAttempts] = useState(0);
+  const retryTimeout = useRef<number | null>(null);
 
   // Auth State
   const [authSession, setAuthSession] = useState<AuthSession | null>(() => api.getSession());
@@ -34,7 +37,7 @@ export const App: React.FC = () => {
   const [isSquadAnalysisOpen, setIsSquadAnalysisOpen] = useState(false);
   const [isAuditLogOpen, setIsAuditLogOpen] = useState(false);
 
-  const fetchInitialData = async (session = api.getSession(), retries = 3) => {
+  const fetchInitialData = async (session = api.getSession(), retries = 14) => {
     try {
       const [stateData, fData, pData] = await Promise.all([
         api.getAuctionState(),
@@ -44,6 +47,12 @@ export const App: React.FC = () => {
       setAuctionState(stateData);
       setFranchises(fData);
       setPlayers(pData);
+      setIsBackendConnected(true);
+      setConnectionAttempts(0);
+      if (retryTimeout.current !== null) {
+        window.clearTimeout(retryTimeout.current);
+        retryTimeout.current = null;
+      }
 
       if (session && ['Super Admin', 'Admin', 'Operator'].includes(session.role)) {
         try {
@@ -63,8 +72,10 @@ export const App: React.FC = () => {
       }
     } catch (err) {
       console.error('Error fetching initial data:', err);
+      setIsBackendConnected(false);
       if (retries > 0) {
-        window.setTimeout(() => { void fetchInitialData(session, retries - 1); }, 1500);
+        setConnectionAttempts((attempts) => attempts + 1);
+        retryTimeout.current = window.setTimeout(() => { void fetchInitialData(session, retries - 1); }, 5000);
       }
     }
   };
@@ -91,6 +102,7 @@ export const App: React.FC = () => {
 
     return () => {
       window.clearTimeout(initialLoad);
+      if (retryTimeout.current !== null) window.clearTimeout(retryTimeout.current);
       unsubscribe();
       auctionWs.disconnect();
     };
@@ -203,6 +215,22 @@ export const App: React.FC = () => {
 
       {/* Main Content Area — offset by sidebar width */}
       <main className={`flex-1 transition-all duration-200 ${isProjectorView ? 'md:ml-16' : 'md:ml-64'}`}>
+        {!isBackendConnected && (
+          <div role="status" className="mx-4 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100 md:mx-8">
+            <span>
+              {auctionState
+                ? 'Connection to the auction server was interrupted. Reconnecting…'
+                : connectionAttempts > 0
+                  ? 'The auction server is waking up or temporarily unavailable. Retrying automatically…'
+                  : 'Connecting to the auction server…'}
+            </span>
+            {connectionAttempts >= 14 && (
+              <button onClick={() => { void fetchInitialData(); }} className="rounded-lg border border-amber-200/30 px-3 py-1.5 font-semibold hover:bg-amber-200/10">
+                Retry now
+              </button>
+            )}
+          </div>
+        )}
         {currentView === 'public' && (
           <PublicView
             auctionState={auctionState}
