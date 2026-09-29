@@ -196,6 +196,8 @@ export const App: React.FC = () => {
         onOpenSquadAnalysis={() => setIsSquadAnalysisOpen(true)}
         onOpenAuditLog={openAuditLog}
         onExportExcel={handleExportExcel}
+        players={players}
+        franchises={franchises}
         collapsed={isProjectorView}
       />
 

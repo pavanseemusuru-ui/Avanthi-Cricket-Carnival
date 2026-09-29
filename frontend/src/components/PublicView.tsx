@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import type { AuctionState, Franchise, Player, AuthRole } from '../types';
 import { api } from '../services/api';
-import { AlertTriangle, Search, Shield, Trophy, Flame, Zap, Clock } from 'lucide-react';
+import { AlertTriangle, Search, Shield, Trophy, Flame, Zap, Clock, Gavel, SkipForward, X, Play, Pause, Square } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 interface PublicViewProps {
@@ -43,15 +43,26 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
     return counts;
   }, [unauctionedPlayers]);
 
-  const lotSearchMatches = unauctionedPlayers.filter((p) => {
-    if (selectedFilterBucket && p.bucket.toUpperCase() !== selectedFilterBucket) return false;
-    if (!lotSearchQuery.trim()) return Boolean(selectedFilterBucket);
-    const q = lotSearchQuery.toLowerCase();
-    return p.name.toLowerCase().includes(q) || p.roll_number.toLowerCase().includes(q) || p.bucket.toLowerCase().includes(q);
-  }).slice(0, 10);
+  // Fast lot search matches (searches ALL players when query is entered)
+  const lotSearchMatches = React.useMemo(() => {
+    const q = lotSearchQuery.trim().toLowerCase();
+    if (!q) {
+      if (selectedFilterBucket) {
+        return players.filter((p) => !p.sold_franchise_id && !p.retained_franchise_id && p.bucket.toUpperCase() === selectedFilterBucket).slice(0, 15);
+      }
+      return [];
+    }
+    return players.filter((p) => {
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.roll_number.toLowerCase().includes(q) ||
+        p.bucket.toLowerCase().includes(q)
+      );
+    }).slice(0, 15);
+  }, [players, lotSearchQuery, selectedFilterBucket]);
 
   const handleSelectLotPlayer = async (player: Player) => {
-    if (userRole !== 'Admin' && userRole !== 'Super Admin') {
+    if (userRole !== 'Admin' && userRole !== 'Super Admin' && userRole !== 'Operator') {
       onRequireAdmin();
       return;
     }
@@ -75,6 +86,85 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
       if (onRefreshState) onRefreshState();
     } catch (err: any) {
       setBiddingMsg({ type: 'error', text: err.message || 'Failed to switch bucket' });
+    }
+  };
+
+  const handleHammer = async () => {
+    if (userRole !== 'Admin' && userRole !== 'Super Admin' && userRole !== 'Operator') {
+      onRequireAdmin();
+      return;
+    }
+    setBiddingMsg(null);
+    try {
+      const res = await api.hammerLot(userRole);
+      if (res.sold) {
+        confetti({ particleCount: 80, spread: 80, origin: { y: 0.6 } });
+      }
+      setBiddingMsg({ type: 'success', text: res.message || 'Hammer action completed successfully!' });
+      if (onRefreshState) onRefreshState();
+    } catch (err: any) {
+      setBiddingMsg({ type: 'error', text: err.message || 'Hammer action failed' });
+    }
+  };
+
+  const handleSkip = async () => {
+    if (userRole !== 'Admin' && userRole !== 'Super Admin' && userRole !== 'Operator') {
+      onRequireAdmin();
+      return;
+    }
+    setBiddingMsg(null);
+    try {
+      const res = await api.skipPlayer(userRole);
+      setBiddingMsg({ type: 'success', text: res.message || 'Player skipped.' });
+      if (onRefreshState) onRefreshState();
+    } catch (err: any) {
+      setBiddingMsg({ type: 'error', text: err.message || 'Skip action failed' });
+    }
+  };
+
+  const handleStartTimer = async () => {
+    if (userRole !== 'Admin' && userRole !== 'Super Admin' && userRole !== 'Operator') {
+      onRequireAdmin();
+      return;
+    }
+    setBiddingMsg(null);
+    try {
+      const res = await api.updateTimerConfig(undefined, 'start');
+      setBiddingMsg({ type: 'success', text: res.message || 'Timer started.' });
+      if (onRefreshState) onRefreshState();
+    } catch (err: any) {
+      setBiddingMsg({ type: 'error', text: err.message || 'Failed to start timer' });
+    }
+  };
+
+  const handlePauseResumeTimer = async () => {
+    if (userRole !== 'Admin' && userRole !== 'Super Admin' && userRole !== 'Operator') {
+      onRequireAdmin();
+      return;
+    }
+    setBiddingMsg(null);
+    const action = auctionState?.is_paused ? 'resume' : 'pause';
+    try {
+      const res = await api.updateTimerConfig(undefined, action);
+      setBiddingMsg({ type: 'success', text: res.message || `Timer ${action}d.` });
+      if (onRefreshState) onRefreshState();
+    } catch (err: any) {
+      setBiddingMsg({ type: 'error', text: err.message || `Failed to ${action} timer` });
+    }
+  };
+
+  const handleStopTimer = async () => {
+    if (userRole !== 'Admin' && userRole !== 'Super Admin' && userRole !== 'Operator') {
+      onRequireAdmin();
+      return;
+    }
+    setBiddingMsg(null);
+    try {
+      const res = await api.updateTimerConfig(undefined, 'stop');
+      setBiddingMsg({ type: 'success', text: res.message || 'Timer stopped.' });
+      if (onRefreshState) onRefreshState();
+    } catch (err: any) {
+      setBiddingMsg({ type: 'error', text: err.message || 'Failed to stop timer' });
     }
   };
 
@@ -137,7 +227,7 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
       )}
 
       {/* Quick Auction Control & Player Search Bar */}
-      <div className="glass-panel rounded-3xl p-4 border border-zinc-800 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
+      <div className="glass-panel rounded-3xl p-4 border border-zinc-800 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl relative z-40">
         {/* Bucket Selector Tabs */}
         <div className="flex items-center space-x-2 overflow-x-auto w-full md:w-auto pb-1 md:pb-0 scrollbar-none">
           <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider shrink-0 flex items-center gap-1">
@@ -190,7 +280,7 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
         </div>
 
         {/* Quick Player Search for Direct Lot Assignment */}
-        <div className="relative w-full md:w-72">
+        <div className="relative z-50 w-full md:w-80">
           <div className="flex items-center glass-input rounded-xl px-3 py-2 border border-zinc-800 focus-within:border-zinc-600 transition">
             <Search className="w-4 h-4 text-zinc-400 mr-2 shrink-0" />
             <input
@@ -201,36 +291,100 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
               onFocus={() => setIsSearchOpen(true)}
               className="bg-transparent text-xs text-white focus:outline-none w-full placeholder:text-zinc-500"
             />
+            {lotSearchQuery && (
+              <button
+                onClick={() => { setLotSearchQuery(''); setIsSearchOpen(false); }}
+                className="text-zinc-400 hover:text-white p-0.5"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
-          {isSearchOpen && lotSearchMatches.length > 0 && (
-            <div className="absolute top-full left-0 right-0 mt-1 bg-[#121318] border border-zinc-800 rounded-xl shadow-2xl z-50 overflow-hidden max-h-64 overflow-y-auto">
-              <div className="p-2 bg-zinc-900/80 border-b border-zinc-800 text-[10px] text-zinc-400 font-bold flex justify-between items-center">
-                <span>{selectedFilterBucket ? `Bucket ${selectedFilterBucket} Players` : 'Matching Unauctioned Players'}</span>
-                <button onClick={() => setIsSearchOpen(false)} className="text-zinc-500 hover:text-white">Close</button>
-              </div>
-              {lotSearchMatches.map((p) => (
-                <div
-                  key={p.id}
-                  onClick={() => handleSelectLotPlayer(p)}
-                  className="p-2.5 hover:bg-zinc-800 cursor-pointer border-b border-zinc-800 text-xs flex items-center justify-between transition"
-                >
-                  <div>
-                    <p className="font-bold text-white">{p.name}</p>
-                    <p className="text-[10px] text-zinc-400 font-mono">{p.roll_number} &bull; Yr {p.year_of_study}</p>
-                  </div>
-                  <span className="px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 font-bold text-[10px] border border-zinc-700">
-                    {p.bucket}
+          {isSearchOpen && (lotSearchQuery.trim() || selectedFilterBucket) && (
+            <>
+              <div className="fixed inset-0 z-[9998]" onClick={() => setIsSearchOpen(false)} />
+              <div className="absolute top-full right-0 w-80 sm:w-96 mt-2 bg-[#0e0f14] border border-zinc-700 rounded-2xl shadow-2xl z-[9999] overflow-hidden max-h-96 overflow-y-auto p-2.5 space-y-1">
+                <div className="p-2 bg-zinc-900 border-b border-zinc-800 text-[10px] text-zinc-400 font-bold flex justify-between items-center">
+                  <span>
+                    {lotSearchQuery.trim()
+                      ? `Search Matches (${lotSearchMatches.length})`
+                      : `Bucket ${selectedFilterBucket} Players (${lotSearchMatches.length})`}
                   </span>
+                  <button onClick={() => setIsSearchOpen(false)} className="text-zinc-400 hover:text-white font-bold text-xs">
+                    Close ✕
+                  </button>
                 </div>
-              ))}
-            </div>
+
+                {lotSearchMatches.length === 0 ? (
+                  <div className="p-4 text-center text-xs text-zinc-400 font-semibold">
+                    No player found matching &quot;{lotSearchQuery}&quot;
+                  </div>
+                ) : (
+                  lotSearchMatches.map((p) => {
+                    const isSold = Boolean(p.sold_franchise_id || p.retained_franchise_id || p.referred_franchise_id);
+                    const teamId = p.sold_franchise_id || p.retained_franchise_id || p.referred_franchise_id;
+                    const team = teamId ? franchises.find((f) => f.id === teamId) : null;
+
+                    return (
+                      <div
+                        key={p.id}
+                        onClick={() => {
+                          if (!isSold) {
+                            handleSelectLotPlayer(p);
+                          } else {
+                            setBiddingMsg({
+                              type: 'success',
+                              text: `Player ${p.name} (${p.roll_number}) is ${p.sold_type?.toUpperCase() || 'ASSIGNED'} to ${team?.name || 'Franchise'} for ${p.sold_price || p.base_price} Cr.`,
+                            });
+                            setIsSearchOpen(false);
+                          }
+                        }}
+                        className="p-2.5 rounded-xl hover:bg-zinc-800/90 cursor-pointer border border-zinc-800/80 hover:border-zinc-700 transition flex items-center justify-between text-xs group"
+                      >
+                        <div className="flex items-center space-x-2.5 min-w-0">
+                          <img
+                            src={p.photo_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${p.roll_number}`}
+                            alt={p.name}
+                            className="w-9 h-9 rounded-xl bg-zinc-900 object-cover border border-zinc-700 shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <p className="font-bold text-white group-hover:text-indigo-300 transition-colors truncate">
+                              {p.name}
+                            </p>
+                            <p className="text-[10px] text-zinc-400 font-mono truncate">
+                              {p.roll_number} &bull; {p.branch} &bull; Yr {p.year_of_study}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center space-x-2 shrink-0 ml-2">
+                          <span className="px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 font-bold text-[10px] border border-zinc-700">
+                            {p.bucket}
+                          </span>
+                          {isSold ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-black bg-emerald-950 text-emerald-300 border border-emerald-800 flex items-center gap-1">
+                              {team?.logo_url && <img src={team.logo_url} alt="" className="w-3.5 h-3.5 object-contain" />}
+                              <span>{team?.short_code || 'SOLD'}</span>
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-300 border border-amber-800">
+                              UNSOLD
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </>
           )}
         </div>
       </div>
 
       {/* Main Grid: Current Lot & Hall Status */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
         {/* Current Lot Card (7 cols) */}
         <div className="lg:col-span-7 glass-panel rounded-3xl p-6 relative overflow-hidden border border-zinc-800 shadow-2xl">
           <div className="absolute top-0 right-0 bg-white text-black text-xs font-black px-4 py-1.5 rounded-bl-2xl shadow-md flex items-center space-x-1">
@@ -291,29 +445,113 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
                     )}
                   </div>
 
-                  {/* Prominent Large Digital Timer Display */}
-                  <div className="text-center sm:text-right border-t sm:border-t-0 sm:border-l border-zinc-800 pt-3 sm:pt-0 sm:pl-4">
-                    <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-wider flex items-center justify-center sm:justify-end gap-1">
-                      <Clock className="w-3.5 h-3.5 inline animate-spin-slow text-lime-400" /> Auction Timer
-                    </p>
-                    <div className="flex items-center justify-center sm:justify-end space-x-2 mt-1">
+                  {/* Prominent Large Digital Timer Display & Live Status */}
+                  <div className="text-center sm:text-right border-t sm:border-t-0 sm:border-l border-zinc-800 pt-3 sm:pt-0 sm:pl-4 flex flex-col justify-center items-center sm:items-end">
+                    <div className="flex items-center space-x-1.5 mb-1">
+                      <Clock className="w-3.5 h-3.5 inline text-lime-400" />
+                      <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-wider">
+                        Auction Timer
+                      </span>
+                      {auctionState?.is_paused ? (
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-amber-950 text-amber-300 border border-amber-800 tracking-wider">
+                          PAUSED
+                        </span>
+                      ) : auctionState?.timer_running ? (
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-lime-950 text-lime-300 border border-lime-800 animate-pulse tracking-wider">
+                          LIVE
+                        </span>
+                      ) : (
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-zinc-800 text-zinc-400 border border-zinc-700 tracking-wider">
+                          STOPPED
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-center sm:justify-end space-x-2 my-0.5">
                       <div
-                        className={`text-5xl md:text-6xl font-black font-mono tracking-tighter transition-all duration-300 ${
+                        className={`text-4xl md:text-5xl font-black font-mono tracking-tighter transition-all duration-300 ${
                           (auctionState?.timer_seconds ?? 30) <= 5
-                            ? 'text-red-500 animate-pulse scale-115 drop-shadow-[0_0_20px_rgba(239,68,68,1)]'
+                            ? 'text-red-500 animate-pulse scale-110 drop-shadow-[0_0_20px_rgba(239,68,68,1)]'
                             : (auctionState?.timer_seconds ?? 30) <= 10
                             ? 'text-amber-400 drop-shadow-[0_0_12px_rgba(251,191,36,0.6)]'
                             : 'text-lime-400 drop-shadow-[0_0_12px_rgba(132,204,22,0.6)]'
                         }`}
                       >
-                        {String(auctionState?.timer_seconds ?? 30).padStart(2, '0')}s
+                        00:{String(auctionState?.timer_seconds ?? 30).padStart(2, '0')}
                       </div>
                     </div>
-                    <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider mt-1">
-                      {auctionState?.is_paused ? 'Paused' : auctionState?.timer_running ? 'Timer Ticking' : 'Awaiting Bid'}
-                    </p>
                   </div>
                 </div>
+
+                {/* Admin Live Auction & Timer Controls (Available ONLY to Admin) */}
+                {(userRole === 'Super Admin' || userRole === 'Admin' || userRole === 'Operator') && (
+                  <div className="space-y-2 pt-1">
+                    {/* Timer Admin Action Bar */}
+                    <div className="bg-[#121318] p-2.5 rounded-xl border border-zinc-800 flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-amber-400" /> Timer Controls:
+                      </span>
+                      <div className="flex items-center space-x-2">
+                        <button
+                          onClick={handleStartTimer}
+                          title="Start Timer"
+                          className="px-3 py-1.5 bg-lime-500 hover:bg-lime-400 text-black text-xs font-black rounded-lg shadow transition flex items-center space-x-1 cursor-pointer"
+                        >
+                          <Play className="w-3.5 h-3.5 fill-current" />
+                          <span>Start</span>
+                        </button>
+
+                        <button
+                          onClick={handlePauseResumeTimer}
+                          title={auctionState?.is_paused ? "Resume Timer" : "Pause Timer"}
+                          className={`px-3 py-1.5 text-xs font-extrabold rounded-lg border transition flex items-center space-x-1 cursor-pointer ${
+                            auctionState?.is_paused
+                              ? 'bg-amber-500 text-black border-amber-400 font-black hover:bg-amber-400'
+                              : 'bg-zinc-800 text-zinc-200 border-zinc-700 hover:bg-zinc-700'
+                          }`}
+                        >
+                          {auctionState?.is_paused ? (
+                            <>
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                              <span>Resume</span>
+                            </>
+                          ) : (
+                            <>
+                              <Pause className="w-3.5 h-3.5 fill-current" />
+                              <span>Pause</span>
+                            </>
+                          )}
+                        </button>
+
+                        <button
+                          onClick={handleStopTimer}
+                          title="Stop / Reset Timer"
+                          className="px-3 py-1.5 bg-red-950/80 hover:bg-red-900 text-red-300 text-xs font-bold rounded-lg border border-red-800 transition flex items-center space-x-1 cursor-pointer"
+                        >
+                          <Square className="w-3.5 h-3.5 fill-current" />
+                          <span>Stop</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        onClick={handleHammer}
+                        className="py-3 bg-gradient-to-r from-amber-500 via-yellow-500 to-amber-400 hover:from-amber-400 hover:to-yellow-400 text-black font-black text-sm rounded-xl shadow-lg shadow-amber-500/20 flex items-center justify-center space-x-2 transition transform active:scale-95 cursor-pointer"
+                      >
+                        <Gavel className="w-4 h-4 fill-current" />
+                        <span>PRESS HAMMER</span>
+                      </button>
+
+                      <button
+                        onClick={handleSkip}
+                        className="py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-extrabold text-xs rounded-xl border border-zinc-700 flex items-center justify-center space-x-2 transition cursor-pointer"
+                      >
+                        <SkipForward className="w-4 h-4 text-zinc-400" />
+                        <span>SKIP PLAYER</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           ) : (

@@ -142,6 +142,22 @@ export const api = {
     return handleResponse<any>(res, 'Failed to override year');
   },
 
+  updatePlayer: async (playerId: number, data: any): Promise<{ message: string }> => {
+    const res = await apiFetch(`${API_BASE}/players/${playerId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return handleResponse<{ message: string }>(res, 'Player update failed');
+  },
+
+  deletePlayer: async (playerId: number): Promise<{ message: string }> => {
+    const res = await apiFetch(`${API_BASE}/players/${playerId}`, {
+      method: 'DELETE',
+    });
+    return handleResponse<{ message: string }>(res, 'Player deletion failed');
+  },
+
   // Franchises
   getPublicFranchises: async (): Promise<Franchise[]> => {
     const res = await apiFetch(`${API_BASE}/franchises/public`);

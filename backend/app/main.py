@@ -591,9 +591,10 @@ async def update_timer_config(req: schemas.TimerSettingRequest, request: Request
         state.is_paused = True
     elif req.action == "resume":
         state.is_paused = False
-    elif req.action == "reset":
+    elif req.action in {"reset", "stop"}:
         state.timer_seconds = state.timer_duration_seconds
         state.timer_running = False
+        state.is_paused = False
     elif req.action == "start":
         state.timer_seconds = state.timer_duration_seconds
         state.timer_running = True
@@ -668,6 +669,87 @@ async def override_player_year(player_id: int, override_year: int, request: Requ
 
     await broadcast_auction_state(db)
     return {"message": f"Year override applied for {player.name} -> {player.bucket}"}
+
+
+@app.put("/api/players/{player_id}")
+async def update_player(player_id: int, req: schemas.PlayerUpdateRequest, request: Request, db: Session = Depends(get_db)):
+    player = db.query(Player).filter(Player.id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    if req.roll_number and req.roll_number.strip().upper() != player.roll_number:
+        new_roll = req.roll_number.strip().upper()
+        existing = db.query(Player).filter(Player.roll_number == new_roll, Player.id != player_id).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Another player with this roll number already exists.")
+        player.roll_number = new_roll
+
+    if req.mobile_number and req.mobile_number.strip() != player.mobile_number:
+        new_mobile = req.mobile_number.strip()
+        existing = db.query(Player).filter(Player.mobile_number == new_mobile, Player.id != player_id).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Another player with this mobile number already exists.")
+        player.mobile_number = new_mobile
+
+    if req.photo_url:
+        validate_photo_data(req.photo_url)
+        player.photo_url = req.photo_url
+
+    if req.name is not None: player.name = req.name.strip()
+    if req.course is not None: player.course = req.course.strip()
+    if req.program is not None: player.program = req.program.strip()
+    if req.branch is not None: player.branch = req.branch.strip()
+    if req.year_of_study is not None: player.year_of_study = req.year_of_study
+    if req.bucket is not None: player.bucket = req.bucket.strip().upper()
+    if req.base_price is not None: player.base_price = req.base_price
+    if req.derived_player_type is not None: player.derived_player_type = req.derived_player_type
+    if req.cricheroes_url is not None: player.cricheroes_url = req.cricheroes_url
+    if req.cricheroes_mobile is not None: player.cricheroes_mobile = req.cricheroes_mobile
+    if req.payment_status is not None: player.payment_status = req.payment_status
+    if req.profile_status is not None: player.profile_status = req.profile_status
+    if req.is_skilled_batter is not None: player.is_skilled_batter = req.is_skilled_batter
+    if req.is_skilled_bowler is not None: player.is_skilled_bowler = req.is_skilled_bowler
+    if req.is_wicket_keeper is not None: player.is_wicket_keeper = req.is_wicket_keeper
+    if req.matches is not None: player.matches = req.matches
+    if req.runs is not None: player.runs = req.runs
+    if req.wickets is not None: player.wickets = req.wickets
+
+    db.add(AuditLog(
+        action_type="PLAYER_UPDATE",
+        player_id=player.id,
+        performed_by=audit_actor(request, "Super Admin"),
+        reason=f"Updated details for player {player.name} ({player.roll_number})."
+    ))
+    db.commit()
+    db.refresh(player)
+    await broadcast_auction_state(db)
+    return {"message": f"Player '{player.name}' updated successfully."}
+
+
+@app.delete("/api/players/{player_id}")
+async def delete_player(player_id: int, request: Request, db: Session = Depends(get_db)):
+    player = db.query(Player).filter(Player.id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    p_name = player.name
+    p_roll = player.roll_number
+
+    state = get_or_create_auction_state(db)
+    if state.current_player_id == player_id:
+        state.current_player_id = None
+        state.current_bid_price = 0
+        state.current_bidder_id = None
+
+    db.delete(player)
+    db.add(AuditLog(
+        action_type="PLAYER_DELETE",
+        performed_by=audit_actor(request, "Super Admin"),
+        reason=f"Deleted player '{p_name}' ({p_roll}, ID: {player_id})."
+    ))
+    db.commit()
+    await broadcast_auction_state(db)
+    return {"message": f"Player '{p_name}' deleted successfully."}
 
 # --- Franchise Endpoints ---
 
@@ -781,6 +863,8 @@ async def update_franchise(franchise_id: int, req: schemas.FranchiseUpdateReques
         franchise.short_code = code_upper
 
     if req.logo_url is not None:
+        if req.logo_url and req.logo_url.startswith("data:"):
+            validate_photo_data(req.logo_url)
         franchise.logo_url = req.logo_url or f"https://api.dicebear.com/7.x/identicon/svg?seed={franchise.short_code}"
     if req.faculty_coordinator_name is not None:
         franchise.faculty_coordinator_name = req.faculty_coordinator_name

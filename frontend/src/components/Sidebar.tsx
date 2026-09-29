@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import type { ViewMode } from '../types';
+import type { ViewMode, Player, Franchise } from '../types';
+import { GlobalPlayerSearch } from './GlobalPlayerSearch';
 import {
   Trophy, Tv, Zap, ShieldCheck, UserPlus,
   BarChart3, History, Download, Users, Sparkles
@@ -11,6 +12,8 @@ interface SidebarProps {
   onOpenSquadAnalysis: () => void;
   onOpenAuditLog: () => void;
   onExportExcel: () => void;
+  players?: Player[];
+  franchises?: Franchise[];
   /** When true, sidebar shows as icon-only narrow strip (projector mode) */
   collapsed?: boolean;
 }
@@ -21,6 +24,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenSquadAnalysis,
   onOpenAuditLog,
   onExportExcel,
+  players = [],
+  franchises = [],
   collapsed = false,
 }) => {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -113,8 +118,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex flex-col w-64 fixed top-0 left-0 bottom-0 z-40 bg-[#08080a] border-r border-zinc-800/80 text-zinc-200 shadow-2xl">
-        {/* Logo */}
-        <div className="p-5 border-b border-zinc-800/70">
+        {/* Logo & Global Search */}
+        <div className="p-4 border-b border-zinc-800/70 space-y-3">
           <div onClick={() => handleNav('public')} className="flex items-center space-x-3 cursor-pointer group">
             <div className="w-10 h-10 rounded-2xl bg-white text-black flex items-center justify-center font-black text-base shadow-md group-hover:scale-105 transition-transform">
               ACC
@@ -126,6 +131,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <p className="text-[10px] text-zinc-400 font-medium">Auction Portal 2026–27</p>
             </div>
           </div>
+
+          <GlobalPlayerSearch players={players} franchises={franchises} />
         </div>
 
         {/* Nav Items */}
@@ -193,7 +200,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Mobile Drawer Overlay */}
       {mobileOpen && (
-        <div className="md:hidden fixed inset-0 z-40 bg-black/90 backdrop-blur-md pt-16 px-4 pb-6 overflow-y-auto space-y-2">
+        <div className="md:hidden fixed inset-0 z-40 bg-black/90 backdrop-blur-md pt-16 px-4 pb-6 overflow-y-auto space-y-3">
+          <div className="pb-2 border-b border-zinc-800">
+            <GlobalPlayerSearch players={players} franchises={franchises} />
+          </div>
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = currentView === item.id;

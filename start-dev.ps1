@@ -10,7 +10,7 @@ Start-Process -FilePath powershell.exe -WorkingDirectory $backendPath -ArgumentL
 	'-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-File', "`"$backendScript`""
 )
 Start-Process -FilePath powershell.exe -WorkingDirectory $frontendPath -ArgumentList @(
-	'-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-Command', "Set-Location `"$frontendPath`"; npm run dev"
+	'-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-Command', "Set-Location `"$frontendPath`"; npm run dev -- --open"
 )
 
 Write-Host "Backend: http://localhost:8005" -ForegroundColor Cyan

@@ -126,6 +126,29 @@ class PlayerRegisterRequest(BaseModel):
     catches: int = 0
     stumpings: int = 0
 
+class PlayerUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    roll_number: Optional[str] = None
+    mobile_number: Optional[str] = None
+    course: Optional[str] = None
+    program: Optional[str] = None
+    branch: Optional[str] = None
+    year_of_study: Optional[int] = None
+    bucket: Optional[str] = None
+    base_price: Optional[int] = None
+    photo_url: Optional[str] = None
+    derived_player_type: Optional[str] = None
+    cricheroes_url: Optional[str] = None
+    cricheroes_mobile: Optional[str] = None
+    payment_status: Optional[str] = None
+    profile_status: Optional[str] = None
+    is_skilled_batter: Optional[bool] = None
+    is_skilled_bowler: Optional[bool] = None
+    is_wicket_keeper: Optional[bool] = None
+    matches: Optional[int] = None
+    runs: Optional[int] = None
+    wickets: Optional[int] = None
+
 # --- Franchise Schemas ---
 
 class FranchiseBase(BaseModel):
