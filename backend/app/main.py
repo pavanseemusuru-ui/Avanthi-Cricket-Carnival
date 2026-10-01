@@ -277,6 +277,67 @@ def calculate_franchise_purse(db: Session, franchise_id: int) -> int:
             spent += p.sold_price
     return max(0, 1000 - spent)
 
+def get_franchise_stats(db: Session, franchise_ids: List[int]):
+    """Calculate public squad totals in one player query, not four per franchise."""
+    stats = {
+        franchise_id: {
+            "bucket_counts": {"B1": 0, "B2": 0, "B3": 0, "B4": 0, "B5": 0, "PG": 0},
+            "purchases": 0,
+            "squad_count": 0,
+            "purse": 1000,
+        }
+        for franchise_id in franchise_ids
+    }
+    unsold_counts = {"B1": 0, "B2": 0, "B3": 0, "B4": 0, "B5": 0, "PG": 0}
+    if not stats:
+        return stats, unsold_counts
+
+    active_sale_types = {"sold", "allotted", "scouted", "direct_assigned"}
+    excluded_bucket_types = {"retained", "referred"}
+    player_rows = db.query(
+        Player.sold_franchise_id,
+        Player.retained_franchise_id,
+        Player.referred_franchise_id,
+        Player.sold_type,
+        Player.sold_price,
+        Player.bucket,
+        Player.payment_status,
+    ).all()
+
+    for row in player_rows:
+        sold_id = row.sold_franchise_id
+        sale_is_active = row.sold_type in active_sale_types
+        if sold_id in stats:
+            franchise_stats = stats[sold_id]
+            if sale_is_active:
+                franchise_stats["purchases"] += 1
+                franchise_stats["purse"] -= row.sold_price or 0
+            if row.sold_type is None or row.sold_type not in excluded_bucket_types:
+                bucket = normalize_bucket_name(row.bucket)
+                if bucket in franchise_stats["bucket_counts"]:
+                    franchise_stats["bucket_counts"][bucket] += 1
+
+        for franchise_id in {
+            row.sold_franchise_id,
+            row.retained_franchise_id,
+            row.referred_franchise_id,
+        } & stats.keys():
+            stats[franchise_id]["squad_count"] += 1
+
+        if (
+            row.payment_status == "paid"
+            and sold_id is None
+            and row.retained_franchise_id is None
+            and row.referred_franchise_id is None
+        ):
+            bucket = row.bucket
+            if bucket in unsold_counts:
+                unsold_counts[bucket] += 1
+
+    for franchise_stats in stats.values():
+        franchise_stats["purse"] = max(0, franchise_stats["purse"])
+    return stats, unsold_counts
+
 def get_or_create_auction_state(db: Session) -> AuctionState:
     state = db.query(AuctionState).first()
     if not state:
@@ -344,21 +405,8 @@ def get_auction_state_data(db: Session) -> Dict[str, Any]:
 
     # Calculate scarcity warnings across all franchises
     franchises = db.query(Franchise).all()
-    all_f_bucket_counts = []
-    for f in franchises:
-        all_f_bucket_counts.append(get_franchise_bucket_counts(db, f.id))
-
-    # Calculate unsold available count per bucket
-    unsold_counts = {"B1": 0, "B2": 0, "B3": 0, "B4": 0, "B5": 0, "PG": 0}
-    for b in unsold_counts:
-        cnt = db.query(Player).filter(
-            Player.bucket == b,
-            Player.payment_status == "paid",
-            Player.sold_franchise_id.is_(None),
-            Player.retained_franchise_id.is_(None),
-            Player.referred_franchise_id.is_(None)
-        ).count()
-        unsold_counts[b] = cnt
+    franchise_stats, unsold_counts = get_franchise_stats(db, [f.id for f in franchises])
+    all_f_bucket_counts = [franchise_stats[f.id]["bucket_counts"] for f in franchises]
 
     scarcity_warnings = auction_engine.calculate_scarcity_warnings(all_f_bucket_counts, unsold_counts, bucket_mins)
 
@@ -759,13 +807,15 @@ def get_public_franchises(db: Session = Depends(get_db)):
     state = get_or_create_auction_state(db)
     bucket_mins = json.loads(state.bucket_minimums_json) if (state and state.bucket_minimums_json) else auction_engine.DEFAULT_BUCKET_MINIMUMS
     active_player = db.query(Player).filter(Player.id == state.current_player_id).first() if state and state.current_player_id else None
+    franchise_stats, _ = get_franchise_stats(db, [f.id for f in franchises])
 
     result = []
     for f in franchises:
-        b_counts = get_franchise_bucket_counts(db, f.id)
-        purchases_cnt = get_franchise_auction_purchases_count(db, f.id)
-        total_squad_cnt = get_franchise_total_squad_count(db, f.id)
-        current_purse = calculate_franchise_purse(db, f.id)
+        stats = franchise_stats[f.id]
+        b_counts = stats["bucket_counts"]
+        purchases_cnt = stats["purchases"]
+        total_squad_cnt = stats["squad_count"]
+        current_purse = stats["purse"]
 
         # Calculate max permissible bid for current lot player if active
         max_bid = auction_engine.calculate_max_permissible_bid(
@@ -800,9 +850,10 @@ def get_public_franchises(db: Session = Depends(get_db)):
 @app.get("/api/franchises/admin", response_model=List[schemas.AdminFranchiseResponse])
 def get_admin_franchises(db: Session = Depends(get_db)):
     public_f = get_public_franchises(db)
+    franchises_by_id = {f.id: f for f in db.query(Franchise).all()}
     result = []
     for pf in public_f:
-        f = db.query(Franchise).filter(Franchise.id == pf.id).first()
+        f = franchises_by_id.get(pf.id)
         af = schemas.AdminFranchiseResponse(
             **pf.dict(),
             faculty_coordinator_mobile=f.faculty_coordinator_mobile if f else "",

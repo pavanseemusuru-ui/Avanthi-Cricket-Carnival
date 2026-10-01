@@ -25,7 +25,27 @@ export const App: React.FC = () => {
   const [isBackendConnected, setIsBackendConnected] = useState(false);
   const [connectionAttempts, setConnectionAttempts] = useState(0);
   const retryTimeout = useRef<number | null>(null);
+  const lastPublicContext = useRef<string | null>(null);
+  const lastFranchiseContext = useRef<string | null>(null);
+  const lastAuditContext = useRef<string | null>(null);
 
+  const publicContextKey = (state: AuctionState) => JSON.stringify([
+    state.current_player?.id ?? null,
+    state.current_bucket,
+    state.round_number,
+  ]);
+  const franchiseContextKey = (state: AuctionState) => JSON.stringify([
+    state.current_player?.id ?? null,
+    state.current_bucket,
+    state.round_number,
+    state.current_bid_price,
+    state.current_bidder?.id ?? null,
+  ]);
+  const auditContextKey = (state: AuctionState) => JSON.stringify([
+    state.current_player?.id ?? null,
+    state.current_bid_price,
+    state.current_bidder?.id ?? null,
+  ]);
   // Auth State
   const [authSession, setAuthSession] = useState<AuthSession | null>(() => api.getSession());
   const [isAdminLoginOpen, setIsAdminLoginOpen] = useState(false);
@@ -45,6 +65,9 @@ export const App: React.FC = () => {
         api.getPublicPlayers(),
       ]);
       setAuctionState(stateData);
+      lastPublicContext.current = publicContextKey(stateData);
+      lastFranchiseContext.current = franchiseContextKey(stateData);
+      lastAuditContext.current = auditContextKey(stateData);
       setFranchises(fData);
       setPlayers(pData);
       setIsBackendConnected(true);
@@ -86,16 +109,40 @@ export const App: React.FC = () => {
     // Connect to WebSocket for real-time live updates
     const unsubscribe = auctionWs.subscribe((msg) => {
       if (msg.type === 'AUCTION_STATE_UPDATE') {
-        setAuctionState(msg.data);
-        // Refresh franchises & players to keep purse and squad sync'd
-        api.getPublicFranchises().then(setFranchises).catch(console.error);
-        api.getPublicPlayers().then(setPlayers).catch(console.error);
+        const state = msg.data as AuctionState;
+        setAuctionState(state);
         const session = api.getSession();
-        if (session && ['Super Admin', 'Admin', 'Operator'].includes(session.role)) {
-          api.getAdminFranchises().then(setAdminFranchises).catch(console.error);
-          api.getAdminPlayers().then(setAdminPlayers).catch(console.error);
-          api.getAuditLog().then(setAuditLogs).catch(console.error);
+
+        // Timer ticks and bids only change the live state. Refresh full player
+        // and franchise lists when the lot/bucket/round changes.
+        const publicKey = publicContextKey(state);
+        if (lastPublicContext.current !== publicKey) {
+          lastPublicContext.current = publicKey;
+          api.getPublicPlayers().then(setPlayers).catch(console.error);
+          if (session && ['Super Admin', 'Admin', 'Operator'].includes(session.role)) {
+            api.getAdminPlayers().then(setAdminPlayers).catch(console.error);
+          }
         }
+
+        // Purse and max-bid values change with each successful bid, so refresh
+        // team cards for bid changes without downloading every player again.
+        const franchiseKey = franchiseContextKey(state);
+        if (lastFranchiseContext.current !== franchiseKey) {
+          lastFranchiseContext.current = franchiseKey;
+          api.getPublicFranchises().then(setFranchises).catch(console.error);
+          if (session && ['Super Admin', 'Admin', 'Operator'].includes(session.role)) {
+            api.getAdminFranchises().then(setAdminFranchises).catch(console.error);
+          }
+        }
+
+        const auditKey = auditContextKey(state);
+        if (lastAuditContext.current !== auditKey) {
+          lastAuditContext.current = auditKey;
+          if (session && ['Super Admin', 'Admin', 'Operator'].includes(session.role)) {
+            api.getAuditLog().then(setAuditLogs).catch(console.error);
+          }
+        }
+
       }
     });
     auctionWs.connect();
@@ -191,6 +238,7 @@ export const App: React.FC = () => {
       return;
     }
     setIsAuditLogOpen(true);
+    api.getAuditLog().then(setAuditLogs).catch(console.error);
   };
 
   const biddingFranchises = authSession?.role === 'Captain'
