@@ -78,6 +78,10 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
   };
 
   const handleSetBucket = async (b: string) => {
+    if (userRole !== 'Admin' && userRole !== 'Super Admin' && userRole !== 'Operator') {
+      onRequireAdmin();
+      return;
+    }
     setBiddingMsg(null);
     try {
       const res = await api.setActiveBucket(b);
@@ -237,13 +241,17 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
             const isStageLive = auctionState?.current_bucket === b;
             const isFiltered = selectedFilterBucket === b;
             const count = bucketCounts[b] || 0;
+            const isAdmin = userRole === 'Admin' || userRole === 'Super Admin' || userRole === 'Operator';
 
             return (
               <button
                 key={b}
                 onClick={() => handleSetBucket(b)}
-                title={userRole === 'Admin' || userRole === 'Super Admin' ? `Set live stage to ${b}` : `Filter search by ${b}`}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all duration-200 shrink-0 flex items-center space-x-1.5 cursor-pointer ${
+                disabled={!isAdmin}
+                title={isAdmin ? `Set live stage to ${b}` : `Stage bucket ${b} (Admin access required)`}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all duration-200 shrink-0 flex items-center space-x-1.5 ${
+                  isAdmin ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
+                } ${
                   isStageLive
                     ? 'bg-gradient-to-r from-lime-400 to-emerald-400 text-black shadow-lg shadow-lime-500/20 ring-2 ring-lime-300 font-black'
                     : isFiltered
