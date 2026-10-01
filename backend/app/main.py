@@ -117,7 +117,7 @@ async def login(req: LoginRequest):
     return auth.login(req.username, req.password)
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health_check(db: Session = Depends(get_db)):
     try:
         db.execute(text("SELECT 1"))
