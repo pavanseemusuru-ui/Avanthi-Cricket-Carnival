@@ -8,14 +8,13 @@ interface PublicViewProps {
   auctionState: AuctionState | null;
   franchises: Franchise[];
   players: Player[];
-  onRefreshState?: () => void;
   userRole: AuthRole | null;
   userFranchiseId: number | null;
   onRequireLogin: () => void;
   onRequireAdmin: () => void;
 }
 
-export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises, players, onRefreshState, userRole, userFranchiseId, onRequireLogin, onRequireAdmin }) => {
+export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises, players, userRole, userFranchiseId, onRequireLogin, onRequireAdmin }) => {
   // Fast lot search state
   const [lotSearchQuery, setLotSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -71,7 +70,6 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
       await api.selectPlayerForLot(player.id);
       setLotSearchQuery('');
       setIsSearchOpen(false);
-      if (onRefreshState) onRefreshState();
     } catch (err: any) {
       setBiddingMsg({ type: 'error', text: err.message || 'Failed to select player' });
     }
@@ -87,7 +85,6 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
       const res = await api.setActiveBucket(b);
       setSelectedFilterBucket(b);
       setBiddingMsg({ type: 'success', text: res.message || `Switched live auction stage to Bucket ${b}!` });
-      if (onRefreshState) onRefreshState();
     } catch (err: any) {
       setBiddingMsg({ type: 'error', text: err.message || 'Failed to switch bucket' });
     }
@@ -105,7 +102,6 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
         confetti({ particleCount: 80, spread: 80, origin: { y: 0.6 } });
       }
       setBiddingMsg({ type: 'success', text: res.message || 'Hammer action completed successfully!' });
-      if (onRefreshState) onRefreshState();
     } catch (err: any) {
       setBiddingMsg({ type: 'error', text: err.message || 'Hammer action failed' });
     }
@@ -120,7 +116,6 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
     try {
       const res = await api.skipPlayer(userRole);
       setBiddingMsg({ type: 'success', text: res.message || 'Player skipped.' });
-      if (onRefreshState) onRefreshState();
     } catch (err: any) {
       setBiddingMsg({ type: 'error', text: err.message || 'Skip action failed' });
     }
@@ -135,7 +130,6 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
     try {
       const res = await api.updateTimerConfig(undefined, 'start');
       setBiddingMsg({ type: 'success', text: res.message || 'Timer started.' });
-      if (onRefreshState) onRefreshState();
     } catch (err: any) {
       setBiddingMsg({ type: 'error', text: err.message || 'Failed to start timer' });
     }
@@ -151,7 +145,6 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
     try {
       const res = await api.updateTimerConfig(undefined, action);
       setBiddingMsg({ type: 'success', text: res.message || `Timer ${action}d.` });
-      if (onRefreshState) onRefreshState();
     } catch (err: any) {
       setBiddingMsg({ type: 'error', text: err.message || `Failed to ${action} timer` });
     }
@@ -166,7 +159,6 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
     try {
       const res = await api.updateTimerConfig(undefined, 'stop');
       setBiddingMsg({ type: 'success', text: res.message || 'Timer stopped.' });
-      if (onRefreshState) onRefreshState();
     } catch (err: any) {
       setBiddingMsg({ type: 'error', text: err.message || 'Failed to stop timer' });
     }
@@ -195,7 +187,6 @@ export const PublicView: React.FC<PublicViewProps> = ({ auctionState, franchises
       const res = await api.placeBid(franchiseId, nextRequiredBid, f ? `Franchise:${f.short_code}` : 'Franchise');
       confetti({ particleCount: 35, spread: 60, origin: { y: 0.6 } });
       setBiddingMsg({ type: 'success', text: `Bid of ${res.new_bid} pts placed for ${res.franchise}!` });
-      if (onRefreshState) onRefreshState();
     } catch (err: any) {
       setBiddingMsg({ type: 'error', text: err.message || 'Bid rejected' });
     }
