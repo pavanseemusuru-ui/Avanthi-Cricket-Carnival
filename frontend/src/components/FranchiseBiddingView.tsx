@@ -7,14 +7,12 @@ import confetti from 'canvas-confetti';
 interface FranchiseBiddingViewProps {
   auctionState: AuctionState | null;
   franchises: Franchise[];
-  onRefreshState: () => void;
   onLogout: () => void;
 }
 
 export const FranchiseBiddingView: React.FC<FranchiseBiddingViewProps> = ({
   auctionState,
   franchises,
-  onRefreshState,
   onLogout,
 }) => {
   const [selectedFranchiseId, setSelectedFranchiseId] = useState<number | null>(franchises[0]?.id || null);
@@ -35,7 +33,6 @@ export const FranchiseBiddingView: React.FC<FranchiseBiddingViewProps> = ({
     try {
       await api.placeBid(franchiseId, nextRequiredBid, `Franchise:${f.short_code}`);
       confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 } });
-      onRefreshState();
     } catch (err: any) {
       setBiddingError(err.message || 'Bid rejected');
     } finally {
@@ -51,7 +48,6 @@ export const FranchiseBiddingView: React.FC<FranchiseBiddingViewProps> = ({
       } else {
         await api.passFranchise(franchiseId);
       }
-      onRefreshState();
     } catch (err: any) {
       setBiddingError(err.message || 'Action failed');
     }
