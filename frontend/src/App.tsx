@@ -27,24 +27,18 @@ export const App: React.FC = () => {
   const retryTimeout = useRef<number | null>(null);
   const lastPublicContext = useRef<string | null>(null);
   const lastFranchiseContext = useRef<string | null>(null);
-  const lastAuditContext = useRef<string | null>(null);
 
   const publicContextKey = (state: AuctionState) => JSON.stringify([
     state.current_player?.id ?? null,
     state.current_bucket,
     state.round_number,
   ]);
+  // Franchise purse/squad statistics change when a lot or round changes,
+  // not on every bid. Keep bids on the WebSocket path without refetching lists.
   const franchiseContextKey = (state: AuctionState) => JSON.stringify([
     state.current_player?.id ?? null,
     state.current_bucket,
     state.round_number,
-    state.current_bid_price,
-    state.current_bidder?.id ?? null,
-  ]);
-  const auditContextKey = (state: AuctionState) => JSON.stringify([
-    state.current_player?.id ?? null,
-    state.current_bid_price,
-    state.current_bidder?.id ?? null,
   ]);
   // Auth State
   const [authSession, setAuthSession] = useState<AuthSession | null>(() => api.getSession());
@@ -67,7 +61,6 @@ export const App: React.FC = () => {
       setAuctionState(stateData);
       lastPublicContext.current = publicContextKey(stateData);
       lastFranchiseContext.current = franchiseContextKey(stateData);
-      lastAuditContext.current = auditContextKey(stateData);
       setFranchises(fData);
       setPlayers(pData);
       setIsBackendConnected(true);
@@ -136,14 +129,6 @@ export const App: React.FC = () => {
           api.getPublicFranchises().then(setFranchises).catch(console.error);
           if (session && ['Super Admin', 'Admin', 'Operator'].includes(session.role)) {
             api.getAdminFranchises().then(setAdminFranchises).catch(console.error);
-          }
-        }
-
-        const auditKey = auditContextKey(state);
-        if (lastAuditContext.current !== auditKey) {
-          lastAuditContext.current = auditKey;
-          if (session && ['Super Admin', 'Admin', 'Operator'].includes(session.role)) {
-            api.getAuditLog().then(setAuditLogs).catch(console.error);
           }
         }
 
