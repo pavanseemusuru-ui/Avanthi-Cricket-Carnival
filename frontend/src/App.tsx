@@ -288,7 +288,6 @@ export const App: React.FC = () => {
             auctionState={auctionState}
             franchises={franchises}
             players={players}
-            onRefreshState={fetchInitialData}
             userRole={adminRole}
             userFranchiseId={authSession?.franchise_id ?? null}
             onRequireLogin={requireCaptainLogin}
@@ -304,7 +303,6 @@ export const App: React.FC = () => {
           <FranchiseBiddingView
             auctionState={auctionState}
             franchises={biddingFranchises}
-            onRefreshState={fetchInitialData}
             onLogout={handleAdminLogout}
           />
         )}
