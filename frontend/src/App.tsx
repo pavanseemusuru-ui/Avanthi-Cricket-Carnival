@@ -108,6 +108,10 @@ export const App: React.FC = () => {
 
     // Connect to WebSocket for real-time live updates
     const unsubscribe = auctionWs.subscribe((msg) => {
+      if (msg.type === 'AUCTION_TIMER_UPDATE') {
+        setAuctionState((current) => current ? { ...current, ...msg.data } : current);
+        return;
+      }
       if (msg.type === 'AUCTION_STATE_UPDATE') {
         const state = msg.data as AuctionState;
         setAuctionState(state);
