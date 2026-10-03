@@ -206,7 +206,7 @@ async def run_auction_timer():
                     state.timer_seconds = 0
                     state.timer_running = False
                 db.commit()
-                await broadcast_auction_state(db)
+                await broadcast_auction_timer(state)
         except Exception:
             db.rollback()
             logger.exception("Auction timer tick failed")
@@ -218,6 +218,17 @@ async def broadcast_auction_state(db: Session):
     await manager.broadcast({
         "type": "AUCTION_STATE_UPDATE",
         "data": state_data
+    })
+
+async def broadcast_auction_timer(state: AuctionState):
+    """Send lightweight timer ticks without rebuilding the full auction payload."""
+    await manager.broadcast({
+        "type": "AUCTION_TIMER_UPDATE",
+        "data": {
+            "timer_seconds": state.timer_seconds,
+            "timer_running": state.timer_running,
+            "is_paused": state.is_paused,
+        },
     })
 
 def normalize_bucket_name(raw_bucket: Optional[str]) -> str:
