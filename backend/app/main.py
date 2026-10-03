@@ -22,6 +22,7 @@ from app import auth, schemas, auction_engine, roll_parser
 from app.websocket import manager
 
 timer_task = None
+app_event_loop = None
 state_broadcast_lock = asyncio.Lock()
 pending_state_broadcasts = set()
 MAX_PHOTO_SIZE_BYTES = 300 * 1024
@@ -131,7 +132,8 @@ def health_check(db: Session = Depends(get_db)):
 
 @app.on_event("startup")
 async def startup_event():
-    global timer_task
+    global timer_task, app_event_loop
+    app_event_loop = asyncio.get_running_loop()
     validate_production_configuration()
     # Create database schema first if tables do not exist
     Base.metadata.create_all(bind=engine)
@@ -196,56 +198,80 @@ async def shutdown_event():
         except asyncio.CancelledError:
             pass
 
+def _advance_auction_timer():
+    """Run the blocking SQLAlchemy timer tick outside the asyncio event loop."""
+    db = SessionLocal()
+    try:
+        state = get_or_create_auction_state(db)
+        if not state or not state.timer_running or state.is_paused or state.timer_seconds <= 0:
+            return None
+        state.timer_seconds -= 1
+        if state.timer_seconds <= 0:
+            state.timer_seconds = 0
+            state.timer_running = False
+        db.commit()
+        return {
+            "timer_seconds": state.timer_seconds,
+            "timer_running": state.timer_running,
+            "is_paused": state.is_paused,
+        }
+    except Exception:
+        db.rollback()
+        logger.exception("Auction timer tick failed")
+        return None
+    finally:
+        db.close()
+
+
 async def run_auction_timer():
     while True:
         await asyncio.sleep(1)
-        db = SessionLocal()
-        try:
-            state = get_or_create_auction_state(db)
-            if state and state.timer_running and not state.is_paused and state.timer_seconds > 0:
-                state.timer_seconds -= 1
-                if state.timer_seconds <= 0:
-                    state.timer_seconds = 0
-                    state.timer_running = False
-                db.commit()
-                await broadcast_auction_timer(state)
-        except Exception:
-            db.rollback()
-            logger.exception("Auction timer tick failed")
-        finally:
-            db.close()
+        timer_data = await asyncio.to_thread(_advance_auction_timer)
+        if timer_data is not None:
+            await broadcast_auction_timer(timer_data)
 
-async def broadcast_auction_state(db: Session):
-    state_data = get_auction_state_data(db)
+def _load_latest_auction_state_data():
+    """Load the blocking database payload in a worker thread."""
+    db = SessionLocal()
+    try:
+        return get_auction_state_data(db)
+    finally:
+        db.close()
+
+
+async def broadcast_auction_state():
+    state_data = await asyncio.to_thread(_load_latest_auction_state_data)
     await manager.broadcast({
         "type": "AUCTION_STATE_UPDATE",
         "data": state_data
     })
 
+
 async def _broadcast_latest_auction_state():
     async with state_broadcast_lock:
-        db = SessionLocal()
         try:
-            await broadcast_auction_state(db)
+            await broadcast_auction_state()
         except Exception:
             logger.exception("Auction state broadcast failed")
-        finally:
-            db.close()
 
-def schedule_auction_state_broadcast():
+
+def _launch_state_broadcast():
     task = asyncio.create_task(_broadcast_latest_auction_state())
     pending_state_broadcasts.add(task)
     task.add_done_callback(pending_state_broadcasts.discard)
 
-async def broadcast_auction_timer(state: AuctionState):
+
+def schedule_auction_state_broadcast():
+    loop = app_event_loop
+    if loop is not None and not loop.is_closed():
+        loop.call_soon_threadsafe(_launch_state_broadcast)
+
+
+async def broadcast_auction_timer(timer_data: Dict[str, Any]):
     """Send lightweight timer ticks without rebuilding the full auction payload."""
     await manager.broadcast({
         "type": "AUCTION_TIMER_UPDATE",
-        "data": {
-            "timer_seconds": state.timer_seconds,
-            "timer_running": state.timer_running,
-            "is_paused": state.is_paused,
-        },
+        "data": timer_data,
     })
 
 def normalize_bucket_name(raw_bucket: Optional[str]) -> str:
@@ -484,7 +510,7 @@ def get_admin_players(db: Session = Depends(get_db)):
     return db.query(Player).all()
 
 @app.post("/api/players/register", response_model=schemas.PublicPlayerResponse)
-async def register_player(req: schemas.PlayerRegisterRequest, db: Session = Depends(get_db)):
+def register_player(req: schemas.PlayerRegisterRequest, db: Session = Depends(get_db)):
     if not req.photo_url:
         raise HTTPException(status_code=400, detail="A player photograph is required.")
     validate_photo_data(req.photo_url)
@@ -613,7 +639,7 @@ async def register_player(req: schemas.PlayerRegisterRequest, db: Session = Depe
 
 
 @app.put("/api/players/{player_id}/photo")
-async def upload_player_photo(player_id: int, req: PhotoUploadRequest, db: Session = Depends(get_db)):
+def upload_player_photo(player_id: int, req: PhotoUploadRequest, db: Session = Depends(get_db)):
     validate_photo_data(req.photo_data)
     player = db.query(Player).filter(Player.id == player_id).first()
     if not player:
@@ -653,7 +679,7 @@ def lookup_player(query: str, db: Session = Depends(get_db)):
     }
 
 @app.post("/api/auction/timer-config")
-async def update_timer_config(req: schemas.TimerSettingRequest, request: Request, db: Session = Depends(get_db)):
+def update_timer_config(req: schemas.TimerSettingRequest, request: Request, db: Session = Depends(get_db)):
     state = get_or_create_auction_state(db)
 
     if req.duration_seconds is not None:
@@ -686,7 +712,7 @@ async def update_timer_config(req: schemas.TimerSettingRequest, request: Request
     return {"message": "Timer settings updated", "timer_duration": state.timer_duration_seconds, "timer_seconds": state.timer_seconds}
 
 @app.put("/api/players/{player_id}/pay")
-async def mark_player_paid(player_id: int, request: Request, paid: bool = True, db: Session = Depends(get_db)):
+def mark_player_paid(player_id: int, request: Request, paid: bool = True, db: Session = Depends(get_db)):
     player = db.query(Player).filter(Player.id == player_id).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
@@ -704,7 +730,7 @@ async def mark_player_paid(player_id: int, request: Request, paid: bool = True, 
     return {"message": f"Player {player.name} payment status set to {player.payment_status}"}
 
 @app.put("/api/players/{player_id}/resolve-profile")
-async def resolve_player_profile(player_id: int, cricheroes_url: str, cricheroes_mobile: str, request: Request, db: Session = Depends(get_db)):
+def resolve_player_profile(player_id: int, cricheroes_url: str, cricheroes_mobile: str, request: Request, db: Session = Depends(get_db)):
     player = db.query(Player).filter(Player.id == player_id).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
@@ -722,7 +748,7 @@ async def resolve_player_profile(player_id: int, cricheroes_url: str, cricheroes
     return {"message": f"Profile resolved for {player.name}"}
 
 @app.put("/api/players/{player_id}/override-year")
-async def override_player_year(player_id: int, override_year: int, request: Request, db: Session = Depends(get_db)):
+def override_player_year(player_id: int, override_year: int, request: Request, db: Session = Depends(get_db)):
     player = db.query(Player).filter(Player.id == player_id).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
@@ -748,7 +774,7 @@ async def override_player_year(player_id: int, override_year: int, request: Requ
 
 
 @app.put("/api/players/{player_id}")
-async def update_player(player_id: int, req: schemas.PlayerUpdateRequest, request: Request, db: Session = Depends(get_db)):
+def update_player(player_id: int, req: schemas.PlayerUpdateRequest, request: Request, db: Session = Depends(get_db)):
     player = db.query(Player).filter(Player.id == player_id).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
@@ -803,7 +829,7 @@ async def update_player(player_id: int, req: schemas.PlayerUpdateRequest, reques
 
 
 @app.delete("/api/players/{player_id}")
-async def delete_player(player_id: int, request: Request, db: Session = Depends(get_db)):
+def delete_player(player_id: int, request: Request, db: Session = Depends(get_db)):
     player = db.query(Player).filter(Player.id == player_id).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
@@ -892,7 +918,7 @@ def get_admin_franchises(db: Session = Depends(get_db)):
     return result
 
 @app.post("/api/franchises/register", response_model=schemas.PublicFranchiseResponse)
-async def register_franchise(req: schemas.FranchiseRegisterRequest, db: Session = Depends(get_db)):
+def register_franchise(req: schemas.FranchiseRegisterRequest, db: Session = Depends(get_db)):
     if db.query(Franchise).count() >= 11:
         raise HTTPException(status_code=400, detail="The tournament is limited to eleven franchises.")
     existing = db.query(Franchise).filter(
@@ -923,7 +949,7 @@ async def register_franchise(req: schemas.FranchiseRegisterRequest, db: Session 
 
 
 @app.put("/api/franchises/{franchise_id}")
-async def update_franchise(franchise_id: int, req: schemas.FranchiseUpdateRequest, request: Request, db: Session = Depends(get_db)):
+def update_franchise(franchise_id: int, req: schemas.FranchiseUpdateRequest, request: Request, db: Session = Depends(get_db)):
     franchise = db.query(Franchise).filter(Franchise.id == franchise_id).first()
     if not franchise:
         raise HTTPException(status_code=404, detail="Franchise not found")
@@ -974,7 +1000,7 @@ async def update_franchise(franchise_id: int, req: schemas.FranchiseUpdateReques
 
 
 @app.delete("/api/franchises/{franchise_id}")
-async def delete_franchise(franchise_id: int, request: Request, db: Session = Depends(get_db)):
+def delete_franchise(franchise_id: int, request: Request, db: Session = Depends(get_db)):
     franchise = db.query(Franchise).filter(Franchise.id == franchise_id).first()
     if not franchise:
         raise HTTPException(status_code=404, detail="Franchise not found")
@@ -1015,7 +1041,7 @@ async def delete_franchise(franchise_id: int, request: Request, db: Session = De
 
 
 @app.post("/api/franchises/refer-player")
-async def refer_player(req: schemas.ReferPlayerRequest, request: Request, db: Session = Depends(get_db)):
+def refer_player(req: schemas.ReferPlayerRequest, request: Request, db: Session = Depends(get_db)):
     player = db.query(Player).filter(Player.id == req.player_id).first()
     franchise = db.query(Franchise).filter(Franchise.id == req.franchise_id).first()
     if not player or not franchise:
@@ -1046,7 +1072,7 @@ def get_auction_state(db: Session = Depends(get_db)):
     return get_auction_state_data(db)
 
 @app.post("/api/auction/bid")
-async def place_bid(req: schemas.BidRequest, request: Request, db: Session = Depends(get_db)):
+def place_bid(req: schemas.BidRequest, request: Request, db: Session = Depends(get_db)):
     claims = getattr(request.state, "user", {})
     if claims.get("role") == "Captain" and str(claims.get("franchise_id")) != str(req.franchise_id):
         raise HTTPException(status_code=403, detail="Captains can bid only for their assigned franchise.")
@@ -1128,7 +1154,7 @@ async def place_bid(req: schemas.BidRequest, request: Request, db: Session = Dep
     return {"message": "Bid accepted", "new_bid": req.attempted_bid, "franchise": franchise.name}
 
 @app.post("/api/auction/pass")
-async def pass_franchise(franchise_id: int, request: Request, db: Session = Depends(get_db)):
+def pass_franchise(franchise_id: int, request: Request, db: Session = Depends(get_db)):
     state = get_or_create_auction_state(db)
     if not state or not state.current_player_id:
         raise HTTPException(status_code=400, detail="No active lot to pass on.")
@@ -1156,7 +1182,7 @@ async def pass_franchise(franchise_id: int, request: Request, db: Session = Depe
     return {"message": "Franchise passed"}
 
 @app.post("/api/auction/unpass")
-async def unpass_franchise(franchise_id: int, request: Request, db: Session = Depends(get_db)):
+def unpass_franchise(franchise_id: int, request: Request, db: Session = Depends(get_db)):
     state = get_or_create_auction_state(db)
     if not state or not state.current_player_id:
         raise HTTPException(status_code=400, detail="No active lot to re-enter.")
@@ -1180,7 +1206,7 @@ async def unpass_franchise(franchise_id: int, request: Request, db: Session = De
     return {"message": "Franchise re-entered play"}
 
 @app.post("/api/auction/hammer")
-async def hammer_lot(request: Request, performed_by: str = "Super Admin", db: Session = Depends(get_db)):
+def hammer_lot(request: Request, performed_by: str = "Super Admin", db: Session = Depends(get_db)):
     performed_by = audit_actor(request, performed_by)
     state = get_or_create_auction_state(db)
     if not state or not state.current_player_id:
@@ -1229,13 +1255,13 @@ async def hammer_lot(request: Request, performed_by: str = "Super Admin", db: Se
     db.commit()
 
     # Automatically draw next player in bucket
-    await draw_next_player_internal(db, state)
+    draw_next_player_internal(db, state)
     schedule_auction_state_broadcast()
 
     return {"message": res_msg}
 
 @app.post("/api/auction/skip")
-async def skip_player(request: Request, performed_by: str = "Super Admin", db: Session = Depends(get_db)):
+def skip_player(request: Request, performed_by: str = "Super Admin", db: Session = Depends(get_db)):
     performed_by = audit_actor(request, performed_by)
     state = get_or_create_auction_state(db)
     if not state or not state.current_player_id:
@@ -1259,12 +1285,12 @@ async def skip_player(request: Request, performed_by: str = "Super Admin", db: S
     db.add(log)
     db.commit()
 
-    await draw_next_player_internal(db, state)
+    draw_next_player_internal(db, state)
     schedule_auction_state_broadcast()
     return {"message": f"Skipped {player.name}"}
 
 @app.post("/api/auction/undo")
-async def undo_transaction(req: schemas.UndoRequest, request: Request, db: Session = Depends(get_db)):
+def undo_transaction(req: schemas.UndoRequest, request: Request, db: Session = Depends(get_db)):
     audit_entry = db.query(AuditLog).filter(AuditLog.id == req.audit_id).first()
     if not audit_entry:
         raise HTTPException(status_code=404, detail="Audit log entry not found.")
@@ -1307,7 +1333,7 @@ async def undo_transaction(req: schemas.UndoRequest, request: Request, db: Sessi
     return {"message": f"Successfully undone Audit Entry #{audit_entry.id}. All pursed, slots, and limits recalculated."}
 
 @app.post("/api/auction/direct-assign")
-async def direct_assign_player(req: schemas.DirectAssignRequest, request: Request, db: Session = Depends(get_db)):
+def direct_assign_player(req: schemas.DirectAssignRequest, request: Request, db: Session = Depends(get_db)):
     player = db.query(Player).filter(Player.id == req.player_id).first()
     franchise = db.query(Franchise).filter(Franchise.id == req.franchise_id).first()
     if not player or not franchise:
@@ -1332,7 +1358,7 @@ async def direct_assign_player(req: schemas.DirectAssignRequest, request: Reques
     return {"message": f"Directly assigned {player.name} to {franchise.name} for {req.price} credits."}
 
 @app.post("/api/auction/relax-minimum")
-async def relax_bucket_minimum(req: schemas.RelaxMinimumRequest, request: Request, db: Session = Depends(get_db)):
+def relax_bucket_minimum(req: schemas.RelaxMinimumRequest, request: Request, db: Session = Depends(get_db)):
     state = get_or_create_auction_state(db)
     if state.round_number != 2 or state.current_player_id:
         raise HTTPException(status_code=400, detail="Minimums can be relaxed only after Round 2 lots are complete.")
@@ -1374,7 +1400,7 @@ async def relax_bucket_minimum(req: schemas.RelaxMinimumRequest, request: Reques
 
 
 @app.post("/api/auction/auto-allot")
-async def auto_allot_round_two(request: Request, db: Session = Depends(get_db)):
+def auto_allot_round_two(request: Request, db: Session = Depends(get_db)):
     state = get_or_create_auction_state(db)
     if not state or state.round_number != 2 or state.current_player_id:
         raise HTTPException(status_code=400, detail="Auto-allotment is available only after Round 2 lots are complete.")
@@ -1476,7 +1502,7 @@ async def auto_allot_round_two(request: Request, db: Session = Depends(get_db)):
 
 
 @app.post("/api/auction/scout")
-async def scout_player(req: schemas.ScoutRequest, request: Request, db: Session = Depends(get_db)):
+def scout_player(req: schemas.ScoutRequest, request: Request, db: Session = Depends(get_db)):
     state = db.query(AuctionState).filter(AuctionState.id == 1).with_for_update().first()
     if not state or state.round_number != 2 or state.current_player_id:
         raise HTTPException(status_code=400, detail="Scouting is available only after Round 2 lots are complete.")
@@ -1533,7 +1559,7 @@ async def scout_player(req: schemas.ScoutRequest, request: Request, db: Session 
     schedule_auction_state_broadcast()
     return {"message": f"{player.name} scouted to {franchise.name} for 20 credits."}
 
-async def draw_next_player_internal(db: Session, state: AuctionState, lot_number: Optional[int] = None):
+def draw_next_player_internal(db: Session, state: AuctionState, lot_number: Optional[int] = None):
     bucket_sequence = ["B3", "B4", "B2", "B5", "B1", "PG"]
     available = db.query(Player).filter(
         Player.payment_status == "paid",
@@ -1621,9 +1647,9 @@ async def draw_next_player_internal(db: Session, state: AuctionState, lot_number
     db.commit()
 
 @app.post("/api/auction/draw-next")
-async def draw_next_player(request: Request, lot_number: Optional[int] = Query(None), db: Session = Depends(get_db)):
+def draw_next_player(request: Request, lot_number: Optional[int] = Query(None), db: Session = Depends(get_db)):
     state = get_or_create_auction_state(db)
-    await draw_next_player_internal(db, state, lot_number)
+    draw_next_player_internal(db, state, lot_number)
     db.add(AuditLog(action_type="DRAW_NEXT", performed_by=audit_actor(request, "Super Admin"), reason="Next auction lot drawn."))
     db.commit()
     schedule_auction_state_broadcast()
@@ -1631,7 +1657,7 @@ async def draw_next_player(request: Request, lot_number: Optional[int] = Query(N
 
 
 @app.post("/api/auction/draw-mode")
-async def set_draw_mode(mode: str, request: Request, db: Session = Depends(get_db)):
+def set_draw_mode(mode: str, request: Request, db: Session = Depends(get_db)):
     if mode not in {"auto", "guest"}:
         raise HTTPException(status_code=400, detail="Draw mode must be auto or guest.")
     state = get_or_create_auction_state(db)
@@ -1646,7 +1672,7 @@ async def set_draw_mode(mode: str, request: Request, db: Session = Depends(get_d
     return {"draw_mode": state.draw_mode}
 
 @app.post("/api/auction/set-bucket")
-async def set_active_bucket(bucket: str, request: Request, db: Session = Depends(get_db)):
+def set_active_bucket(bucket: str, request: Request, db: Session = Depends(get_db)):
     state = get_or_create_auction_state(db)
     normalized_bucket = normalize_bucket_name(bucket)
     if normalized_bucket not in {"B1", "B2", "B3", "B4", "B5", "PG"}:
@@ -1704,7 +1730,7 @@ async def set_active_bucket(bucket: str, request: Request, db: Session = Depends
     return {"message": msg}
 
 @app.post("/api/auction/select-player")
-async def select_player_for_lot(player_id: int, request: Request, db: Session = Depends(get_db)):
+def select_player_for_lot(player_id: int, request: Request, db: Session = Depends(get_db)):
     state = get_or_create_auction_state(db)
     player = db.query(Player).filter(Player.id == player_id).first()
     if not player:
@@ -1784,13 +1810,14 @@ def export_tournament_excel(db: Session = Depends(get_db)):
 # --- WebSocket Endpoint ---
 
 @app.websocket("/ws/auction")
-async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)):
+async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
-        # Send initial state on connection
+        # Load initial state in a worker so ORM work cannot stall other sockets.
+        initial_state = await asyncio.to_thread(_load_latest_auction_state_data)
         await websocket.send_json({
             "type": "AUCTION_STATE_UPDATE",
-            "data": get_auction_state_data(db)
+            "data": initial_state
         })
         while True:
             data = await websocket.receive_text()
