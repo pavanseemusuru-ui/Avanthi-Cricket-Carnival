@@ -22,6 +22,8 @@ from app import auth, schemas, auction_engine, roll_parser
 from app.websocket import manager
 
 timer_task = None
+state_broadcast_lock = asyncio.Lock()
+pending_state_broadcasts = set()
 MAX_PHOTO_SIZE_BYTES = 300 * 1024
 PHOTO_DATA_URL_PATTERN = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$")
 
@@ -219,6 +221,21 @@ async def broadcast_auction_state(db: Session):
         "type": "AUCTION_STATE_UPDATE",
         "data": state_data
     })
+
+async def _broadcast_latest_auction_state():
+    async with state_broadcast_lock:
+        db = SessionLocal()
+        try:
+            await broadcast_auction_state(db)
+        except Exception:
+            logger.exception("Auction state broadcast failed")
+        finally:
+            db.close()
+
+def schedule_auction_state_broadcast():
+    task = asyncio.create_task(_broadcast_latest_auction_state())
+    pending_state_broadcasts.add(task)
+    task.add_done_callback(pending_state_broadcasts.discard)
 
 async def broadcast_auction_timer(state: AuctionState):
     """Send lightweight timer ticks without rebuilding the full auction payload."""
@@ -591,7 +608,7 @@ async def register_player(req: schemas.PlayerRegisterRequest, db: Session = Depe
         raise HTTPException(status_code=409, detail="Roll number or mobile number is already registered.")
     db.refresh(player)
 
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return player
 
 
@@ -603,7 +620,7 @@ async def upload_player_photo(player_id: int, req: PhotoUploadRequest, db: Sessi
         raise HTTPException(status_code=404, detail="Player not found")
     player.photo_url = req.photo_data
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"photo_url": player.photo_url}
 
 @app.get("/api/players/lookup", response_model=schemas.PlayerLookupResponse)
@@ -665,7 +682,7 @@ async def update_timer_config(req: schemas.TimerSettingRequest, request: Request
         reason=f"Timer action={req.action or 'configure'}, duration={state.timer_duration_seconds} seconds.",
     ))
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": "Timer settings updated", "timer_duration": state.timer_duration_seconds, "timer_seconds": state.timer_seconds}
 
 @app.put("/api/players/{player_id}/pay")
@@ -683,7 +700,7 @@ async def mark_player_paid(player_id: int, request: Request, paid: bool = True, 
         reason=f"Payment status set to {player.payment_status}.",
     ))
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"Player {player.name} payment status set to {player.payment_status}"}
 
 @app.put("/api/players/{player_id}/resolve-profile")
@@ -701,7 +718,7 @@ async def resolve_player_profile(player_id: int, cricheroes_url: str, cricheroes
         reason="CricHeroes profile details verified.",
     ))
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"Profile resolved for {player.name}"}
 
 @app.put("/api/players/{player_id}/override-year")
@@ -726,7 +743,7 @@ async def override_player_year(player_id: int, override_year: int, request: Requ
     db.add(log)
     db.commit()
 
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"Year override applied for {player.name} -> {player.bucket}"}
 
 
@@ -781,7 +798,7 @@ async def update_player(player_id: int, req: schemas.PlayerUpdateRequest, reques
     ))
     db.commit()
     db.refresh(player)
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"Player '{player.name}' updated successfully."}
 
 
@@ -807,7 +824,7 @@ async def delete_player(player_id: int, request: Request, db: Session = Depends(
         reason=f"Deleted player '{p_name}' ({p_roll}, ID: {player_id})."
     ))
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"Player '{p_name}' deleted successfully."}
 
 # --- Franchise Endpoints ---
@@ -901,7 +918,7 @@ async def register_franchise(req: schemas.FranchiseRegisterRequest, db: Session 
     db.add(franchise)
     db.commit()
     db.refresh(franchise)
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return get_public_franchises(db)[-1]
 
 
@@ -952,7 +969,7 @@ async def update_franchise(franchise_id: int, req: schemas.FranchiseUpdateReques
         reason=f"Updated franchise profile for {franchise.name} ({franchise.short_code}).",
     ))
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"Franchise '{franchise.name}' updated successfully."}
 
 
@@ -993,7 +1010,7 @@ async def delete_franchise(franchise_id: int, request: Request, db: Session = De
         reason=f"Deleted franchise '{f_name}' (ID: {franchise_id}).",
     ))
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"Franchise '{f_name}' deleted successfully."}
 
 
@@ -1019,7 +1036,7 @@ async def refer_player(req: schemas.ReferPlayerRequest, request: Request, db: Se
         reason=req.reason,
     ))
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"Referral for {player.name} assigned to {franchise.name}."}
 
 # --- Auction Core Mechanics Endpoints ---
@@ -1107,7 +1124,7 @@ async def place_bid(req: schemas.BidRequest, request: Request, db: Session = Dep
     db.add(log)
     db.commit()
 
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": "Bid accepted", "new_bid": req.attempted_bid, "franchise": franchise.name}
 
 @app.post("/api/auction/pass")
@@ -1135,7 +1152,7 @@ async def pass_franchise(franchise_id: int, request: Request, db: Session = Depe
         db.add(log)
         db.commit()
 
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": "Franchise passed"}
 
 @app.post("/api/auction/unpass")
@@ -1159,7 +1176,7 @@ async def unpass_franchise(franchise_id: int, request: Request, db: Session = De
         db.add(log)
         db.commit()
 
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": "Franchise re-entered play"}
 
 @app.post("/api/auction/hammer")
@@ -1213,7 +1230,7 @@ async def hammer_lot(request: Request, performed_by: str = "Super Admin", db: Se
 
     # Automatically draw next player in bucket
     await draw_next_player_internal(db, state)
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
 
     return {"message": res_msg}
 
@@ -1243,7 +1260,7 @@ async def skip_player(request: Request, performed_by: str = "Super Admin", db: S
     db.commit()
 
     await draw_next_player_internal(db, state)
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"Skipped {player.name}"}
 
 @app.post("/api/auction/undo")
@@ -1286,7 +1303,7 @@ async def undo_transaction(req: schemas.UndoRequest, request: Request, db: Sessi
     db.add(undo_log)
     db.commit()
 
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"Successfully undone Audit Entry #{audit_entry.id}. All pursed, slots, and limits recalculated."}
 
 @app.post("/api/auction/direct-assign")
@@ -1311,7 +1328,7 @@ async def direct_assign_player(req: schemas.DirectAssignRequest, request: Reques
     db.add(log)
     db.commit()
 
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"Directly assigned {player.name} to {franchise.name} for {req.price} credits."}
 
 @app.post("/api/auction/relax-minimum")
@@ -1352,7 +1369,7 @@ async def relax_bucket_minimum(req: schemas.RelaxMinimumRequest, request: Reques
     db.add(log)
     db.commit()
 
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"Relaxed bucket {req.bucket} minimum to {req.new_minimum} uniformly for all 11 franchises."}
 
 
@@ -1454,7 +1471,7 @@ async def auto_allot_round_two(request: Request, db: Session = Depends(get_db)):
         reason=f"Round 2 auto-allotment applied to {len(assignments)} players.",
     ))
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"assignments": assignments, "unresolved": unresolved}
 
 
@@ -1513,7 +1530,7 @@ async def scout_player(req: schemas.ScoutRequest, request: Request, db: Session 
         reason=req.reason,
     ))
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"{player.name} scouted to {franchise.name} for 20 credits."}
 
 async def draw_next_player_internal(db: Session, state: AuctionState, lot_number: Optional[int] = None):
@@ -1609,7 +1626,7 @@ async def draw_next_player(request: Request, lot_number: Optional[int] = Query(N
     await draw_next_player_internal(db, state, lot_number)
     db.add(AuditLog(action_type="DRAW_NEXT", performed_by=audit_actor(request, "Super Admin"), reason="Next auction lot drawn."))
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": "Drawn next player"}
 
 
@@ -1625,7 +1642,7 @@ async def set_draw_mode(mode: str, request: Request, db: Session = Depends(get_d
         reason=f"Draw mode changed to {mode}.",
     ))
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"draw_mode": state.draw_mode}
 
 @app.post("/api/auction/set-bucket")
@@ -1683,7 +1700,7 @@ async def set_active_bucket(bucket: str, request: Request, db: Session = Depends
 
     db.add(AuditLog(action_type="SET_BUCKET", performed_by=audit_actor(request, "Super Admin"), reason=f"Active bucket set to {normalized_bucket}."))
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": msg}
 
 @app.post("/api/auction/select-player")
@@ -1709,7 +1726,7 @@ async def select_player_for_lot(player_id: int, request: Request, db: Session = 
     state.passed_franchise_ids = "[]"
     db.add(AuditLog(action_type="SELECT_PLAYER", player_id=player.id, performed_by=audit_actor(request, "Super Admin"), reason="Player selected for the active lot."))
     db.commit()
-    await broadcast_auction_state(db)
+    schedule_auction_state_broadcast()
     return {"message": f"Player {player.name} ({player.roll_number}) set as active lot."}
 
 @app.get("/api/audit-log")
