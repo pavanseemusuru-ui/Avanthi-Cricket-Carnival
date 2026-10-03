@@ -140,7 +140,6 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
     try {
       const res = await api.hammerLot(adminRole || 'Super Admin');
       setAdminMsg({ type: 'success', text: res.message });
-      onRefreshState();
     } catch (err: any) {
       setAdminMsg({ type: 'error', text: err.message || 'Hammer action failed' });
     }
@@ -153,7 +152,6 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
     try {
       const result = await api.placeBid(franchise.id, auctionState.next_required_bid, franchise.short_code);
       setAdminMsg({ type: 'success', text: `Recorded bid of ${result.new_bid} for ${franchise.name}.` });
-      onRefreshState();
     } catch (err: any) {
       setAdminMsg({ type: 'error', text: err.message || 'Assisted bid failed' });
     }
@@ -178,7 +176,6 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
     try {
       const res = await api.skipPlayer(adminRole || 'Super Admin');
       setAdminMsg({ type: 'success', text: res.message });
-      onRefreshState();
     } catch (err: any) {
       setAdminMsg({ type: 'error', text: err.message || 'Skip action failed' });
     }
@@ -189,7 +186,6 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
     try {
       const res = await api.updateTimerConfig(undefined, 'start');
       setAdminMsg({ type: 'success', text: res.message || 'Timer started.' });
-      onRefreshState();
     } catch (err: any) {
       setAdminMsg({ type: 'error', text: err.message || 'Failed to start timer' });
     }
@@ -201,7 +197,6 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
     try {
       const res = await api.updateTimerConfig(undefined, action);
       setAdminMsg({ type: 'success', text: res.message || `Timer ${action}d.` });
-      onRefreshState();
     } catch (err: any) {
       setAdminMsg({ type: 'error', text: err.message || `Failed to ${action} timer` });
     }
@@ -212,7 +207,6 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
     try {
       const res = await api.updateTimerConfig(undefined, 'stop');
       setAdminMsg({ type: 'success', text: res.message || 'Timer stopped.' });
-      onRefreshState();
     } catch (err: any) {
       setAdminMsg({ type: 'error', text: err.message || 'Failed to stop timer' });
     }
@@ -227,7 +221,6 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
     try {
       await api.drawNextPlayer(auctionState?.draw_mode === 'guest' ? Number(guestLotNumber) : undefined);
       setGuestLotNumber('');
-      onRefreshState();
     } catch (err: any) {
       setAdminMsg({ type: 'error', text: err.message || 'Draw next failed' });
     }
@@ -237,7 +230,6 @@ export const AdminControlView: React.FC<AdminControlViewProps> = ({
     setAdminMsg(null);
     try {
       await api.setDrawMode(mode);
-      onRefreshState();
     } catch (err: any) {
       setAdminMsg({ type: 'error', text: err.message || 'Draw mode update failed' });
     }
